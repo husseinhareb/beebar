@@ -157,19 +157,9 @@ pub fn run_x11(bar: &mut Bar) {
                 conn.flush().unwrap();
             }
             Event::ButtonPress(ev) => {
-                use crate::core::event::{ClickEvent, MouseButton};
-                let button = match ev.detail {
-                    1 => MouseButton::Left,
-                    2 => MouseButton::Middle,
-                    3 => MouseButton::Right,
-                    4 => MouseButton::ScrollUp,
-                    5 => MouseButton::ScrollDown,
-                    _ => continue,
-                };
+                use crate::core::event::ClickEvent;
                 let click = ClickEvent {
                     x: ev.event_x as f64,
-                    y: ev.event_y as f64,
-                    button,
                 };
 
                 let modules = &bar.modules;

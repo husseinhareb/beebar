@@ -40,9 +40,4 @@ pub trait Module: Send {
 
     /// Handle a click event on this module's area. Default: no-op.
     fn click(&mut self, _event: ClickEvent) {}
-
-    /// Desired update interval in milliseconds. `None` means event-driven only.
-    fn interval_ms(&self) -> Option<u64> {
-        Some(1000)
-    }
 }

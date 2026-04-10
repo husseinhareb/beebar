@@ -24,8 +24,7 @@ pub fn build_bar(config: &Config) -> Bar {
                     .command
                     .clone()
                     .unwrap_or_else(|| "echo ???".into());
-                let interval = mcfg.interval.unwrap_or(5000);
-                Box::new(CustomModule::new(cmd, interval))
+                Box::new(CustomModule::new(cmd))
             }
             other => {
                 log::warn!("Unknown module type '{}' for '{}'", other, name);

@@ -29,8 +29,4 @@ impl Module for ClockModule {
             ..Default::default()
         }
     }
-
-    fn interval_ms(&self) -> Option<u64> {
-        Some(1000)
-    }
 }

@@ -104,7 +104,7 @@ pub fn run_layer_shell(bar: &mut Bar) {
     }
 }
 
-fn draw_frame(state: &mut WaylandState, qh: &QueueHandle<WaylandState>) {
+fn draw_frame(state: &mut WaylandState, _qh: &QueueHandle<WaylandState>) {
     let width = state.width;
     let height = state.height;
     let stride = width * 4;

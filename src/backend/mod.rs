@@ -1,5 +1,3 @@
-pub mod traits;
-
 #[cfg(feature = "wayland")]
 pub mod wayland;
 

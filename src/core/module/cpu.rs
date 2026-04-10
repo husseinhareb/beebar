@@ -33,8 +33,4 @@ impl Module for CpuModule {
             ..Default::default()
         }
     }
-
-    fn interval_ms(&self) -> Option<u64> {
-        Some(2000)
-    }
 }

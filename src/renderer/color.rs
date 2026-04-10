@@ -8,10 +8,6 @@ pub struct Color {
 }
 
 impl Color {
-    pub const fn rgba(r: f64, g: f64, b: f64, a: f64) -> Self {
-        Self { r, g, b, a }
-    }
-
     pub const fn rgb(r: f64, g: f64, b: f64) -> Self {
         Self { r, g, b, a: 1.0 }
     }
@@ -46,7 +42,6 @@ impl Color {
     // Some useful defaults
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
-    pub const TRANSPARENT: Self = Self::rgba(0.0, 0.0, 0.0, 0.0);
 }
 
 impl Default for Color {

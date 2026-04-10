@@ -3,24 +3,10 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::renderer::color::Color;
-
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default = "default_height")]
     pub height: u32,
-
-    #[serde(default = "default_background")]
-    pub background: String,
-
-    #[serde(default = "default_foreground")]
-    pub foreground: String,
-
-    #[serde(default = "default_font")]
-    pub font: String,
-
-    #[serde(default = "default_font_size")]
-    pub font_size: f64,
 
     #[serde(default)]
     pub modules_left: Vec<String>,
@@ -45,31 +31,10 @@ pub struct ModuleConfig {
 
     #[serde(default)]
     pub command: Option<String>,
-
-    #[serde(default)]
-    pub interval: Option<u64>,
-
-    #[serde(default)]
-    pub background: Option<String>,
-
-    #[serde(default)]
-    pub foreground: Option<String>,
 }
 
 fn default_height() -> u32 {
     30
-}
-fn default_background() -> String {
-    "#1e1e2e".into()
-}
-fn default_foreground() -> String {
-    "#cdd6f4".into()
-}
-fn default_font() -> String {
-    "monospace".into()
-}
-fn default_font_size() -> f64 {
-    14.0
 }
 
 impl Config {
@@ -93,13 +58,6 @@ impl Config {
         toml::from_str("").unwrap()
     }
 
-    pub fn background_color(&self) -> Color {
-        Color::from_hex(&self.background).unwrap_or(Color::BLACK)
-    }
-
-    pub fn foreground_color(&self) -> Color {
-        Color::from_hex(&self.foreground).unwrap_or(Color::WHITE)
-    }
 }
 
 fn dirs_maybe() -> Option<PathBuf> {

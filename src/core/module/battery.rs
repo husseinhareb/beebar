@@ -44,8 +44,4 @@ impl Module for BatteryModule {
             ..Default::default()
         }
     }
-
-    fn interval_ms(&self) -> Option<u64> {
-        Some(10_000)
-    }
 }
