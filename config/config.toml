@@ -1,0 +1,21 @@
+# beebar config
+
+height = 30
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+font = "monospace"
+font_size = 14.0
+
+modules_left = ["cpu"]
+modules_center = ["clock"]
+modules_right = ["battery"]
+
+[module.clock]
+type = "clock"
+format = " %a %b %d  %H:%M:%S"
+
+[module.cpu]
+type = "cpu"
+
+[module.battery]
+type = "battery"

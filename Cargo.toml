@@ -1,0 +1,40 @@
+[package]
+name = "beebar"
+version = "0.1.0"
+edition = "2024"
+description = "A Polybar-like status bar for Wayland and X11, written in Rust"
+
+[dependencies]
+# Wayland
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+smithay-client-toolkit = { version = "0.19", features = ["calloop"] }
+
+# X11
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+
+# Rendering
+cairo-rs = { version = "0.20", features = ["png"] }
+pangocairo = "0.20"
+pango = "0.20"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Async / event loop
+calloop = "0.14"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Misc
+chrono = "0.4"
+sysinfo = "0.32"
+
+[features]
+default = ["wayland", "x11"]
+wayland = []
+x11 = []
