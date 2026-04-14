@@ -24,7 +24,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
 # Async / event loop
-calloop = "0.14"
+calloop = "0.13"
 
 # Logging
 log = "0.4"

@@ -4,6 +4,13 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
+    reexports::{
+        calloop::{
+            timer::{TimeoutAction, Timer},
+            EventLoop, LoopSignal,
+        },
+        calloop_wayland_source::WaylandSource,
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -37,11 +44,12 @@ struct WaylandState {
     width: u32,
     height: u32,
     exit: bool,
+    loop_signal: LoopSignal,
 }
 
 pub fn run_layer_shell(bar: &mut Bar) {
     let conn = Connection::connect_to_env().expect("Failed to connect to Wayland");
-    let (globals, mut event_queue) =
+    let (globals, event_queue) =
         registry_queue_init(&conn).expect("Failed to init registry");
     let qh = event_queue.handle();
 
@@ -67,17 +75,36 @@ pub fn run_layer_shell(bar: &mut Bar) {
     layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer_surface.commit();
 
-    let pool = SlotPool::new(
-        (width * height * 4) as usize,
-        &shm,
-    )
-    .expect("Failed to create slot pool");
+    // Allocate pool large enough for up to 4K-wide bar at the configured height
+    let pool = SlotPool::new((3840 * height * 4) as usize, &shm)
+        .expect("Failed to create slot pool");
 
     // Take ownership of the bar
-    let bar_owned = std::mem::replace(
-        bar,
-        Bar::new(0, 0),
-    );
+    let bar_owned = std::mem::replace(bar, Bar::new(0, 0));
+
+    let mut event_loop: EventLoop<WaylandState> =
+        EventLoop::try_new().expect("Failed to create event loop");
+    let loop_handle = event_loop.handle();
+    let loop_signal = event_loop.get_signal();
+
+    // Drive Wayland I/O from calloop
+    WaylandSource::new(conn, event_queue)
+        .insert(loop_handle.clone())
+        .expect("Failed to insert Wayland source");
+
+    // Periodic timer: update modules and redraw every 500 ms
+    loop_handle
+        .insert_source(
+            Timer::from_duration(std::time::Duration::from_millis(500)),
+            |_, _, state: &mut WaylandState| {
+                if state.configured {
+                    state.bar.update_all();
+                    draw_frame(state);
+                }
+                TimeoutAction::ToDuration(std::time::Duration::from_millis(500))
+            },
+        )
+       .expect("Failed to insert update timer");
 
     let mut state = WaylandState {
         registry_state: RegistryState::new(&globals),
@@ -91,24 +118,26 @@ pub fn run_layer_shell(bar: &mut Bar) {
         width,
         height,
         exit: false,
+        loop_signal,
     };
 
-    // Main event loop
-    while !state.exit {
-        event_queue.blocking_dispatch(&mut state).expect("Wayland dispatch failed");
-
-        if state.configured {
-            state.bar.update_all();
-            draw_frame(&mut state, &qh);
-        }
-    }
+    event_loop
+        .run(None, &mut state, |state| {
+            if state.exit {
+                state.loop_signal.stop();
+            }
+        })
+        .expect("Event loop error");
 }
 
-fn draw_frame(state: &mut WaylandState, _qh: &QueueHandle<WaylandState>) {
+fn draw_frame(state: &mut WaylandState) {
     let width = state.width;
     let height = state.height;
     let stride = width * 4;
     let buf_size = (stride * height) as usize;
+
+    // Ensure the shared-memory pool is large enough for the current dimensions
+    state.pool.resize(buf_size).expect("Failed to resize pool");
 
     let (buffer, canvas) = state
         .pool
@@ -302,6 +331,9 @@ impl LayerShellHandler for WaylandState {
             self.height = configure.new_size.1;
         }
         self.configured = true;
+        // Draw immediately on initial configure / resize
+        self.bar.update_all();
+        draw_frame(self);
     }
 }
 
@@ -324,3 +356,4 @@ delegate_output!(WaylandState);
 delegate_layer!(WaylandState);
 delegate_shm!(WaylandState);
 delegate_registry!(WaylandState);
+
