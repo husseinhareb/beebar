@@ -87,9 +87,9 @@ name = "beebar"
 version = "0.1.0"
 dependencies = [
  "cairo-rs",
- "calloop",
  "chrono",
  "env_logger",
+ "libc",
  "log",
  "pango",
  "pangocairo",

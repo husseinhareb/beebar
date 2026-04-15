@@ -4,13 +4,6 @@ use smithay_client_toolkit::{
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    reexports::{
-        calloop::{
-            timer::{TimeoutAction, Timer},
-            EventLoop, LoopSignal,
-        },
-        calloop_wayland_source::WaylandSource,
-    },
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -23,6 +16,7 @@ use smithay_client_toolkit::{
         Shm, ShmHandler,
     },
 };
+use std::os::unix::io::AsRawFd;
 use wayland_client::{
     globals::registry_queue_init, protocol::wl_output, Connection, QueueHandle,
 };
@@ -44,12 +38,11 @@ struct WaylandState {
     width: u32,
     height: u32,
     exit: bool,
-    loop_signal: LoopSignal,
 }
 
 pub fn run_layer_shell(bar: &mut Bar) {
     let conn = Connection::connect_to_env().expect("Failed to connect to Wayland");
-    let (globals, event_queue) =
+    let (globals, mut event_queue) =
         registry_queue_init(&conn).expect("Failed to init registry");
     let qh = event_queue.handle();
 
@@ -82,29 +75,15 @@ pub fn run_layer_shell(bar: &mut Bar) {
     // Take ownership of the bar
     let bar_owned = std::mem::replace(bar, Bar::new(0, 0));
 
-    let mut event_loop: EventLoop<WaylandState> =
-        EventLoop::try_new().expect("Failed to create event loop");
-    let loop_handle = event_loop.handle();
-    let loop_signal = event_loop.get_signal();
+    // Grab the raw Wayland socket fd for poll() — EventQueue implements AsFd.
+    let wayland_fd = {
+        use std::os::unix::io::AsFd;
+        event_queue.as_fd().as_raw_fd()
+    };
 
-    // Drive Wayland I/O from calloop
-    WaylandSource::new(conn, event_queue)
-        .insert(loop_handle.clone())
-        .expect("Failed to insert Wayland source");
-
-    // Periodic timer: update modules and redraw every 500 ms
-    loop_handle
-        .insert_source(
-            Timer::from_duration(std::time::Duration::from_millis(500)),
-            |_, _, state: &mut WaylandState| {
-                if state.configured {
-                    state.bar.update_all();
-                    draw_frame(state);
-                }
-                TimeoutAction::ToDuration(std::time::Duration::from_millis(500))
-            },
-        )
-       .expect("Failed to insert update timer");
+    // Flush all queued requests (create_surface, set_anchor, commit, etc.)
+    // so the compositor receives them and can send back a configure event.
+    conn.flush().expect("Failed to flush initial Wayland requests");
 
     let mut state = WaylandState {
         registry_state: RegistryState::new(&globals),
@@ -118,16 +97,75 @@ pub fn run_layer_shell(bar: &mut Bar) {
         width,
         height,
         exit: false,
-        loop_signal,
     };
 
-    event_loop
-        .run(None, &mut state, |state| {
-            if state.exit {
-                state.loop_signal.stop();
+    // Do a full roundtrip so the compositor processes our layer_surface.commit
+    // and sends back the configure event before we enter the main loop.
+    event_queue.roundtrip(&mut state).expect("initial roundtrip failed");
+
+    // Poll-based event loop: poll the Wayland fd with a 500 ms timeout so
+    // modules are refreshed at ~2 Hz while still reacting to compositor events
+    // (configure, close, etc.) promptly.
+    let update_interval = std::time::Duration::from_millis(500);
+    let mut next_update = std::time::Instant::now();
+
+    loop {
+        conn.flush().expect("flush");
+
+        // How long until the next scheduled module update?
+        let now = std::time::Instant::now();
+        let timeout_ms: i32 = if now >= next_update {
+            0
+        } else {
+            (next_update - now).as_millis().min(i32::MAX as u128) as i32
+        };
+
+        // Prepare to read events (must be done before polling the fd).
+        let guard = event_queue.prepare_read();
+
+        // Poll the Wayland socket fd.
+        let mut pollfd = libc::pollfd {
+            fd: wayland_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: pollfd array is valid for the duration of this call.
+        let poll_ret = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, timeout_ms) };
+
+        if poll_ret > 0 && pollfd.revents & libc::POLLIN != 0 {
+            // Data available: read it into the event queue.
+            if let Some(g) = guard {
+                match g.read() {
+                    Ok(_) => {}
+                    // EAGAIN: data disappeared between poll and read — safe to ignore.
+                    Err(wayland_client::backend::WaylandError::Io(e))
+                        if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => panic!("failed to read Wayland events: {e}"),
+                }
             }
-        })
-        .expect("Event loop error");
+        } else {
+            // Timeout or no data; drop the guard without reading.
+            drop(guard);
+        }
+
+        // Dispatch all events that are now in the queue.
+        event_queue
+            .dispatch_pending(&mut state)
+            .expect("dispatch failed");
+
+        // Periodic module update + redraw.
+        let now = std::time::Instant::now();
+        if state.configured && now >= next_update {
+            next_update = now + update_interval;
+            state.bar.update_all();
+            draw_frame(&mut state);
+            conn.flush().expect("flush after draw");
+        }
+
+        if state.exit {
+            break;
+        }
+    }
 }
 
 fn draw_frame(state: &mut WaylandState) {
@@ -324,6 +362,7 @@ impl LayerShellHandler for WaylandState {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        log::debug!("LayerSurface configure: new_size={:?}", configure.new_size);
         if configure.new_size.0 > 0 {
             self.width = configure.new_size.0;
         }
