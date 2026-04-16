@@ -11,17 +11,17 @@ use smithay_client_toolkit::{
             LayerSurfaceConfigure,
         },
     },
-    shm::{
-        slot::SlotPool,
-        Shm, ShmHandler,
-    },
+    shm::{Shm, ShmHandler, slot::SlotPool},
 };
 use std::os::unix::io::AsRawFd;
 use wayland_client::{
-    globals::registry_queue_init, protocol::wl_output, Connection, QueueHandle,
+    Connection, Dispatch, QueueHandle, WEnum,
+    globals::registry_queue_init,
+    protocol::{wl_output, wl_pointer, wl_seat},
 };
 
 use crate::core::bar::Bar;
+use crate::core::event::{ClickEvent, MouseButton};
 use crate::renderer::cairo_renderer::CairoRenderer;
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer};
@@ -38,12 +38,15 @@ struct WaylandState {
     width: u32,
     height: u32,
     exit: bool,
+    /// Raw Wayland pointer object (kept alive to receive events).
+    pointer: Option<wl_pointer::WlPointer>,
+    /// Last known pointer position on our bar surface.
+    pointer_pos: (f64, f64),
 }
 
 pub fn run_layer_shell(bar: &mut Bar) {
     let conn = Connection::connect_to_env().expect("Failed to connect to Wayland");
-    let (globals, mut event_queue) =
-        registry_queue_init(&conn).expect("Failed to init registry");
+    let (globals, mut event_queue) = registry_queue_init(&conn).expect("Failed to init registry");
     let qh = event_queue.handle();
 
     let compositor = CompositorState::bind(&globals, &qh).expect("No wl_compositor");
@@ -55,13 +58,8 @@ pub fn run_layer_shell(bar: &mut Bar) {
     let height = bar.height;
     let width = bar.width;
 
-    let layer_surface = layer_shell.create_layer_surface(
-        &qh,
-        surface,
-        Layer::Top,
-        Some("beebar"),
-        None,
-    );
+    let layer_surface =
+        layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("beebar"), None);
     layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
     layer_surface.set_size(0, height);
     layer_surface.set_exclusive_zone(height as i32);
@@ -69,8 +67,15 @@ pub fn run_layer_shell(bar: &mut Bar) {
     layer_surface.commit();
 
     // Allocate pool large enough for up to 4K-wide bar at the configured height
-    let pool = SlotPool::new((3840 * height * 4) as usize, &shm)
-        .expect("Failed to create slot pool");
+    let pool =
+        SlotPool::new((3840 * height * 4) as usize, &shm).expect("Failed to create slot pool");
+
+    // Bind wl_seat so pointer events can be received.
+    // Fail gracefully — a seat is not strictly required for rendering.
+    let _seat: Option<wl_seat::WlSeat> = globals
+        .bind::<wl_seat::WlSeat, _, _>(&qh, 1..=8, ())
+        .map_err(|e| log::warn!("[wayland] no wl_seat: {e}"))
+        .ok();
 
     // Take ownership of the bar
     let bar_owned = std::mem::replace(bar, Bar::new(0, 0));
@@ -83,7 +88,8 @@ pub fn run_layer_shell(bar: &mut Bar) {
 
     // Flush all queued requests (create_surface, set_anchor, commit, etc.)
     // so the compositor receives them and can send back a configure event.
-    conn.flush().expect("Failed to flush initial Wayland requests");
+    conn.flush()
+        .expect("Failed to flush initial Wayland requests");
 
     let mut state = WaylandState {
         registry_state: RegistryState::new(&globals),
@@ -97,11 +103,15 @@ pub fn run_layer_shell(bar: &mut Bar) {
         width,
         height,
         exit: false,
+        pointer: None,
+        pointer_pos: (0.0, 0.0),
     };
 
     // Do a full roundtrip so the compositor processes our layer_surface.commit
     // and sends back the configure event before we enter the main loop.
-    event_queue.roundtrip(&mut state).expect("initial roundtrip failed");
+    event_queue
+        .roundtrip(&mut state)
+        .expect("initial roundtrip failed");
 
     // Poll-based event loop: poll the Wayland fd with a 500 ms timeout so
     // modules are refreshed at ~2 Hz while still reacting to compositor events
@@ -209,7 +219,18 @@ fn draw_frame(state: &mut WaylandState) {
     let measure = |id: &String| -> f64 {
         if let Some(m) = modules.get(id) {
             let view = m.view();
-            state.renderer.measure_text(&view.text, &view.style) + view.padding.0 + view.padding.1
+            if !view.icons.is_empty() {
+                let icon_size = height.saturating_sub(4) as f64;
+                let n = view.icons.len() as f64;
+                view.padding.0
+                    + view.padding.1
+                    + n * icon_size
+                    + (n - 1.0).max(0.0) * view.icon_spacing
+            } else {
+                state.renderer.measure_text(&view.text, &view.style)
+                    + view.padding.0
+                    + view.padding.1
+            }
         } else {
             0.0
         }
@@ -234,16 +255,33 @@ fn draw_frame(state: &mut WaylandState) {
                 );
             }
 
-            // Center text vertically
-            let y = (height as f64 - view.style.font_size) / 2.0;
-            state.renderer.draw_text(
-                Point {
-                    x: region.x + view.padding.0,
-                    y,
-                },
-                &view.text,
-                &view.style,
-            );
+            if !view.icons.is_empty() {
+                // Render tray icons side by side.
+                let icon_size = height.saturating_sub(4);
+                let mut ix = region.x + view.padding.0;
+                let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
+                for icon_data in &view.icons {
+                    state.renderer.draw_icon(
+                        Point { x: ix, y: iy },
+                        &icon_data.pixels,
+                        icon_data.width,
+                        icon_data.height,
+                        icon_size,
+                    );
+                    ix += icon_size as f64 + view.icon_spacing;
+                }
+            } else {
+                // Center text vertically
+                let y = (height as f64 - view.style.font_size) / 2.0;
+                state.renderer.draw_text(
+                    Point {
+                        x: region.x + view.padding.0,
+                        y,
+                    },
+                    &view.text,
+                    &view.style,
+                );
+            }
         }
     }
 
@@ -345,12 +383,7 @@ impl OutputHandler for WaylandState {
 }
 
 impl LayerShellHandler for WaylandState {
-    fn closed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
-    ) {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         self.exit = true;
     }
 
@@ -390,9 +423,117 @@ impl ProvidesRegistryState for WaylandState {
     registry_handlers![OutputState];
 }
 
+// ─── wl_seat: discover pointer capability ────────────────────────────────────
+
+impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities { capabilities } = event {
+            // Pointer capability bit = 1 (per Wayland protocol spec).
+            let has_pointer = match capabilities {
+                WEnum::Value(c) => (u32::from(c) & 1) != 0,
+                WEnum::Unknown(n) => (n & 1) != 0,
+            };
+            if has_pointer && state.pointer.is_none() {
+                state.pointer = Some(seat.get_pointer(qh, ()));
+                log::debug!("[wayland] pointer acquired");
+            }
+        }
+    }
+}
+
+// ─── wl_pointer: track position + dispatch click events ──────────────────────
+
+impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _pointer: &wl_pointer::WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_pos = (surface_x, surface_y);
+            }
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                state.pointer_pos = (surface_x, surface_y);
+            }
+            wl_pointer::Event::Button {
+                button,
+                state: btn_state,
+                ..
+            } => {
+                if !matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed)) {
+                    return;
+                }
+                if !state.configured {
+                    return;
+                }
+
+                let mb = match button {
+                    0x110 => MouseButton::Left,   // BTN_LEFT
+                    0x111 => MouseButton::Right,  // BTN_RIGHT
+                    0x112 => MouseButton::Middle, // BTN_MIDDLE
+                    n => MouseButton::Other(n),
+                };
+                let (px, py) = state.pointer_pos;
+                let click = ClickEvent {
+                    x: px,
+                    y: py,
+                    button: mb,
+                };
+
+                // Compute layout regions using immutable borrows of bar + renderer.
+                let width = state.width;
+                let height = state.height;
+                let icon_size_px = height.saturating_sub(4) as f64;
+                let regions = {
+                    let modules = &state.bar.modules;
+                    let measure = |id: &String| -> f64 {
+                        if let Some(m) = modules.get(id) {
+                            let view = m.view();
+                            if !view.icons.is_empty() {
+                                let n = view.icons.len() as f64;
+                                view.padding.0
+                                    + view.padding.1
+                                    + n * icon_size_px
+                                    + (n - 1.0).max(0.0) * view.icon_spacing
+                            } else {
+                                state.renderer.measure_text(&view.text, &view.style)
+                                    + view.padding.0
+                                    + view.padding.1
+                            }
+                        } else {
+                            0.0
+                        }
+                    };
+                    state.bar.layout.compute(width as f64, &measure)
+                };
+                state.bar.handle_click(&regions, &click);
+            }
+            _ => {}
+        }
+    }
+}
+
 delegate_compositor!(WaylandState);
 delegate_output!(WaylandState);
 delegate_layer!(WaylandState);
 delegate_shm!(WaylandState);
 delegate_registry!(WaylandState);
-

@@ -1,9 +1,9 @@
+use x11rb::COPY_DEPTH_FROM_PARENT;
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
+use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
-use x11rb::COPY_DEPTH_FROM_PARENT;
 
 use crate::core::bar::Bar;
 use crate::renderer::cairo_renderer::CairoRenderer;
@@ -48,8 +48,7 @@ impl Atoms {
 }
 
 pub fn run_x11(bar: &mut Bar) {
-    let (conn, screen_num) =
-        RustConnection::connect(None).expect("Failed to connect to X server");
+    let (conn, screen_num) = RustConnection::connect(None).expect("Failed to connect to X server");
     let screen = &conn.setup().roots[screen_num];
 
     let width = screen.width_in_pixels as u32;
@@ -100,20 +99,7 @@ pub fn run_x11(bar: &mut Bar) {
     // _NET_WM_STRUT_PARTIAL: left, right, top, bottom,
     //   left_start_y, left_end_y, right_start_y, right_end_y,
     //   top_start_x, top_end_x, bottom_start_x, bottom_end_x
-    let strut = [
-        0u32,
-        0,
-        height,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        width,
-        0,
-        0,
-    ];
+    let strut = [0u32, 0, height, 0, 0, 0, 0, 0, 0, width, 0, 0];
     conn.change_property32(
         PropMode::REPLACE,
         win,
@@ -157,18 +143,35 @@ pub fn run_x11(bar: &mut Bar) {
                 conn.flush().unwrap();
             }
             Event::ButtonPress(ev) => {
-                use crate::core::event::ClickEvent;
+                use crate::core::event::{ClickEvent, MouseButton};
+                let button = match ev.detail {
+                    1 => MouseButton::Left,
+                    2 => MouseButton::Middle,
+                    3 => MouseButton::Right,
+                    n => MouseButton::Other(n as u32),
+                };
                 let click = ClickEvent {
                     x: ev.event_x as f64,
+                    y: ev.event_y as f64,
+                    button,
                 };
 
                 let modules = &bar.modules;
                 let measure = |id: &String| -> f64 {
                     if let Some(m) = modules.get(id) {
                         let view = m.view();
-                        renderer.measure_text(&view.text, &view.style)
-                            + view.padding.0
-                            + view.padding.1
+                        if !view.icons.is_empty() {
+                            let icon_size = height.saturating_sub(4) as f64;
+                            let n = view.icons.len() as f64;
+                            view.padding.0
+                                + view.padding.1
+                                + n * icon_size
+                                + (n - 1.0).max(0.0) * view.icon_spacing
+                        } else {
+                            renderer.measure_text(&view.text, &view.style)
+                                + view.padding.0
+                                + view.padding.1
+                        }
                     } else {
                         0.0
                     }
@@ -219,7 +222,16 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
     let measure = |id: &String| -> f64 {
         if let Some(m) = modules.get(id) {
             let view = m.view();
-            renderer.measure_text(&view.text, &view.style) + view.padding.0 + view.padding.1
+            if !view.icons.is_empty() {
+                let icon_size = height.saturating_sub(4) as f64;
+                let n = view.icons.len() as f64;
+                view.padding.0
+                    + view.padding.1
+                    + n * icon_size
+                    + (n - 1.0).max(0.0) * view.icon_spacing
+            } else {
+                renderer.measure_text(&view.text, &view.style) + view.padding.0 + view.padding.1
+            }
         } else {
             0.0
         }
@@ -243,15 +255,31 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
                 );
             }
 
-            let y = (height as f64 - view.style.font_size) / 2.0;
-            renderer.draw_text(
-                Point {
-                    x: region.x + view.padding.0,
-                    y,
-                },
-                &view.text,
-                &view.style,
-            );
+            if !view.icons.is_empty() {
+                let icon_size = height.saturating_sub(4);
+                let mut ix = region.x + view.padding.0;
+                let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
+                for icon_data in &view.icons {
+                    renderer.draw_icon(
+                        Point { x: ix, y: iy },
+                        &icon_data.pixels,
+                        icon_data.width,
+                        icon_data.height,
+                        icon_size,
+                    );
+                    ix += icon_size as f64 + view.icon_spacing;
+                }
+            } else {
+                let y = (height as f64 - view.style.font_size) / 2.0;
+                renderer.draw_text(
+                    Point {
+                        x: region.x + view.padding.0,
+                        y,
+                    },
+                    &view.text,
+                    &view.style,
+                );
+            }
         }
     }
 

@@ -20,10 +20,7 @@ impl CustomModule {
 
 impl Module for CustomModule {
     fn update(&mut self) {
-        let result = Command::new("sh")
-            .arg("-c")
-            .arg(&self.command)
-            .output();
+        let result = Command::new("sh").arg("-c").arg(&self.command).output();
 
         if let Ok(out) = result {
             self.output = String::from_utf8_lossy(&out.stdout).trim().to_string();

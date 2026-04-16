@@ -14,18 +14,20 @@ pub struct CairoRenderer {
 
 impl CairoRenderer {
     pub fn new(width: u32, height: u32) -> Self {
-        let surface =
-            ImageSurface::create(Format::ARgb32, width as i32, height as i32)
-                .expect("failed to create cairo surface");
-        Self { surface, cr: None, pixel_data: Vec::new() }
+        let surface = ImageSurface::create(Format::ARgb32, width as i32, height as i32)
+            .expect("failed to create cairo surface");
+        Self {
+            surface,
+            cr: None,
+            pixel_data: Vec::new(),
+        }
     }
 }
 
 impl Renderer for CairoRenderer {
     fn begin(&mut self, width: u32, height: u32) {
-        self.surface =
-            ImageSurface::create(Format::ARgb32, width as i32, height as i32)
-                .expect("failed to create cairo surface");
+        self.surface = ImageSurface::create(Format::ARgb32, width as i32, height as i32)
+            .expect("failed to create cairo surface");
         let cr = Context::new(&self.surface).expect("failed to create cairo context");
         // Clear
         cr.set_operator(cairo::Operator::Clear);
@@ -64,8 +66,7 @@ impl Renderer for CairoRenderer {
         let cr = match self.cr.as_ref() {
             Some(cr) => cr,
             None => {
-                let tmp_surface =
-                    ImageSurface::create(Format::ARgb32, 1, 1).expect("tmp surface");
+                let tmp_surface = ImageSurface::create(Format::ARgb32, 1, 1).expect("tmp surface");
                 tmp_cr = Context::new(&tmp_surface).expect("tmp context");
                 &tmp_cr
             }
@@ -89,5 +90,65 @@ impl Renderer for CairoRenderer {
 
     fn data(&self) -> &[u8] {
         &self.pixel_data
+    }
+
+    fn draw_icon(&mut self, pos: Point, pixels: &[u8], src_width: u32, src_height: u32, size: u32) {
+        let cr = match self.cr.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Build a Cairo ImageSurface by copying the raw ARGB32 pixels.
+        // We use a temporary surface + context to blit the data in, so
+        // `create_for_data` borrow issues are avoided.
+        let expected = (src_width * src_height * 4) as usize;
+        if pixels.len() < expected {
+            return;
+        }
+        let stride = cairo::Format::ARgb32
+            .stride_for_width(src_width)
+            .unwrap_or(src_width as i32 * 4) as usize;
+        // Create a blank surface and write pixels row by row.
+        let mut icon_surface = match cairo::ImageSurface::create(
+            cairo::Format::ARgb32,
+            src_width as i32,
+            src_height as i32,
+        ) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        {
+            let mut surf_data = match icon_surface.data() {
+                Ok(d) => d,
+                Err(_) => return,
+            };
+            let src_stride = src_width as usize * 4;
+            for row in 0..src_height as usize {
+                let src_off = row * src_stride;
+                let dst_off = row * stride;
+                let copy_len = src_stride
+                    .min(stride)
+                    .min(surf_data.len().saturating_sub(dst_off));
+                if src_off + copy_len <= pixels.len() {
+                    surf_data[dst_off..dst_off + copy_len]
+                        .copy_from_slice(&pixels[src_off..src_off + copy_len]);
+                }
+            }
+        } // surf_data borrow dropped here, surface is now usable
+
+        cr.save().ok();
+        cr.translate(pos.x, pos.y);
+
+        // Scale the source icon to the target size.
+        let scale_x = size as f64 / src_width as f64;
+        let scale_y = size as f64 / src_height as f64;
+        cr.scale(scale_x, scale_y);
+
+        cr.set_source_surface(&icon_surface, 0.0, 0.0).ok();
+        // Set bilinear filter on the source pattern for smooth scaling.
+        cr.source().set_filter(cairo::Filter::Bilinear);
+        cr.rectangle(0.0, 0.0, src_width as f64, src_height as f64);
+        cr.fill().ok();
+        cr.restore().ok();
     }
 }

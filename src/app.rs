@@ -5,6 +5,8 @@ use crate::core::module::battery::BatteryModule;
 use crate::core::module::clock::ClockModule;
 use crate::core::module::cpu::CpuModule;
 use crate::core::module::custom::CustomModule;
+use crate::core::module::tray::TrayModule;
+use crate::core::module::workspaces::WorkspacesModule;
 
 /// Build a `Bar` from the loaded configuration.
 pub fn build_bar(config: &Config) -> Bar {
@@ -20,11 +22,16 @@ pub fn build_bar(config: &Config) -> Bar {
             "cpu" => Box::new(CpuModule::new()),
             "battery" => Box::new(BatteryModule::new()),
             "custom" => {
-                let cmd = mcfg
-                    .command
-                    .clone()
-                    .unwrap_or_else(|| "echo ???".into());
+                let cmd = mcfg.command.clone().unwrap_or_else(|| "echo ???".into());
                 Box::new(CustomModule::new(cmd))
+            }
+            "workspaces" => {
+                let count = mcfg.count.unwrap_or(5);
+                Box::new(WorkspacesModule::new(count))
+            }
+            "tray" => {
+                let size = mcfg.icon_size.unwrap_or(22);
+                Box::new(TrayModule::new(size))
             }
             other => {
                 log::warn!("Unknown module type '{}' for '{}'", other, name);

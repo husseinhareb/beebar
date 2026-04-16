@@ -6,16 +6,24 @@ foreground = "#cdd6f4"
 font = "monospace"
 font_size = 14.0
 
-modules_left = ["cpu"]
-modules_center = ["clock"]
-modules_right = ["battery"]
+modules_left = ["clock"]
+modules_center = ["workspaces"]
+modules_right = ["tray", "cpu", "battery"]
 
 [module.clock]
 type = "clock"
 format = " %a %b %d  %H:%M:%S"
+
+[module.workspaces]
+type = "workspaces"
+count = 5
 
 [module.cpu]
 type = "cpu"
 
 [module.battery]
 type = "battery"
+
+[module.tray]
+type = "tray"
+icon_size = 22

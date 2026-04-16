@@ -50,7 +50,14 @@ impl Bar {
         for region in regions {
             if event.x >= region.x && event.x < region.x + region.width {
                 if let Some(module) = self.modules.get_mut(&region.id) {
-                    module.click(event.clone());
+                    // Pass x relative to this module's own left edge so each
+                    // module can determine which internal slot was clicked.
+                    let rel = ClickEvent {
+                        x: event.x - region.x,
+                        y: event.y,
+                        button: event.button,
+                    };
+                    module.click(rel);
                 }
                 break;
             }

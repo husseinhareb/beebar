@@ -53,4 +53,10 @@ pub trait Renderer {
 
     /// Get the underlying pixel data (ARGB32, stride = width * 4).
     fn data(&self) -> &[u8];
+
+    /// Draw an ARGB32 icon at the given position, scaled to `size`×`size` pixels.
+    /// Default implementation is a no-op so existing renderers compile unchanged.
+    fn draw_icon(&mut self, pos: Point, pixels: &[u8], src_width: u32, src_height: u32, size: u32) {
+        let _ = (pos, pixels, src_width, src_height, size);
+    }
 }
