@@ -633,6 +633,7 @@ impl Module for TrayModule {
         let icons = self.current_icons.lock().unwrap().clone();
         ModuleView {
             text: String::new(),
+            text_segments: Vec::new(),
             style: TextStyle::default(),
             background: None,
             padding: (4.0, 4.0),

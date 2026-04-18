@@ -26,7 +26,7 @@ pub fn build_bar(config: &Config) -> Bar {
                 Box::new(CustomModule::new(cmd))
             }
             "workspaces" => {
-                let count = mcfg.count.unwrap_or(5);
+                let count = mcfg.count.unwrap_or(10);
                 Box::new(WorkspacesModule::new(count))
             }
             "tray" => {

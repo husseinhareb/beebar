@@ -113,10 +113,9 @@ pub fn run_layer_shell(bar: &mut Bar) {
         .roundtrip(&mut state)
         .expect("initial roundtrip failed");
 
-    // Poll-based event loop: poll the Wayland fd with a 500 ms timeout so
-    // modules are refreshed at ~2 Hz while still reacting to compositor events
-    // (configure, close, etc.) promptly.
-    let update_interval = std::time::Duration::from_millis(500);
+    // Poll-based event loop: poll the Wayland fd with a short timeout so
+    // workspace updates feel immediate without busy-spinning the renderer.
+    let update_interval = std::time::Duration::from_millis(100);
     let mut next_update = std::time::Instant::now();
 
     loop {
@@ -227,9 +226,7 @@ fn draw_frame(state: &mut WaylandState) {
                     + n * icon_size
                     + (n - 1.0).max(0.0) * view.icon_spacing
             } else {
-                state.renderer.measure_text(&view.text, &view.style)
-                    + view.padding.0
-                    + view.padding.1
+                view.text_width(&state.renderer) + view.padding.0 + view.padding.1
             }
         } else {
             0.0
@@ -271,16 +268,20 @@ fn draw_frame(state: &mut WaylandState) {
                     ix += icon_size as f64 + view.icon_spacing;
                 }
             } else {
-                // Center text vertically
-                let y = (height as f64 - view.style.font_size) / 2.0;
-                state.renderer.draw_text(
-                    Point {
-                        x: region.x + view.padding.0,
-                        y,
-                    },
-                    &view.text,
-                    &view.style,
-                );
+                let y = (height as f64 - view.text_height()) / 2.0;
+                let mut x = region.x + view.padding.0;
+                if view.text_segments.is_empty() {
+                    state
+                        .renderer
+                        .draw_text(Point { x, y }, &view.text, &view.style);
+                } else {
+                    for segment in &view.text_segments {
+                        x +=
+                            state
+                                .renderer
+                                .draw_text(Point { x, y }, &segment.text, &segment.style);
+                    }
+                }
             }
         }
     }
@@ -495,6 +496,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 let (px, py) = state.pointer_pos;
                 let click = ClickEvent {
                     x: px,
+                    module_width: 0.0,
                     y: py,
                     button: mb,
                 };
@@ -515,9 +517,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                                     + n * icon_size_px
                                     + (n - 1.0).max(0.0) * view.icon_spacing
                             } else {
-                                state.renderer.measure_text(&view.text, &view.style)
-                                    + view.padding.0
-                                    + view.padding.1
+                                view.text_width(&state.renderer) + view.padding.0 + view.padding.1
                             }
                         } else {
                             0.0

@@ -152,6 +152,7 @@ pub fn run_x11(bar: &mut Bar) {
                 };
                 let click = ClickEvent {
                     x: ev.event_x as f64,
+                    module_width: 0.0,
                     y: ev.event_y as f64,
                     button,
                 };
@@ -168,9 +169,7 @@ pub fn run_x11(bar: &mut Bar) {
                                 + n * icon_size
                                 + (n - 1.0).max(0.0) * view.icon_spacing
                         } else {
-                            renderer.measure_text(&view.text, &view.style)
-                                + view.padding.0
-                                + view.padding.1
+                            view.text_width(&renderer) + view.padding.0 + view.padding.1
                         }
                     } else {
                         0.0
@@ -230,7 +229,7 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
                     + n * icon_size
                     + (n - 1.0).max(0.0) * view.icon_spacing
             } else {
-                renderer.measure_text(&view.text, &view.style) + view.padding.0 + view.padding.1
+                view.text_width(renderer) + view.padding.0 + view.padding.1
             }
         } else {
             0.0
@@ -270,15 +269,15 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
                     ix += icon_size as f64 + view.icon_spacing;
                 }
             } else {
-                let y = (height as f64 - view.style.font_size) / 2.0;
-                renderer.draw_text(
-                    Point {
-                        x: region.x + view.padding.0,
-                        y,
-                    },
-                    &view.text,
-                    &view.style,
-                );
+                let y = (height as f64 - view.text_height()) / 2.0;
+                let mut x = region.x + view.padding.0;
+                if view.text_segments.is_empty() {
+                    renderer.draw_text(Point { x, y }, &view.text, &view.style);
+                } else {
+                    for segment in &view.text_segments {
+                        x += renderer.draw_text(Point { x, y }, &segment.text, &segment.style);
+                    }
+                }
             }
         }
     }

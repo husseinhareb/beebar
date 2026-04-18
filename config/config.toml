@@ -16,7 +16,7 @@ format = " %a %b %d  %H:%M:%S"
 
 [module.workspaces]
 type = "workspaces"
-count = 5
+count = 10
 
 [module.cpu]
 type = "cpu"

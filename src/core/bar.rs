@@ -54,6 +54,7 @@ impl Bar {
                     // module can determine which internal slot was clicked.
                     let rel = ClickEvent {
                         x: event.x - region.x,
+                        module_width: region.width,
                         y: event.y,
                         button: event.button,
                     };

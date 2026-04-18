@@ -7,7 +7,7 @@ pub mod workspaces;
 
 use crate::core::event::ClickEvent;
 use crate::renderer::color::Color;
-use crate::renderer::primitives::TextStyle;
+use crate::renderer::primitives::{Renderer, TextStyle};
 
 /// Unique identifier for a module instance.
 pub type ModuleId = String;
@@ -23,8 +23,16 @@ pub struct IconData {
 
 /// The visual output of a module – what the renderer should draw.
 #[derive(Debug, Clone)]
+pub struct TextSegment {
+    pub text: String,
+    pub style: TextStyle,
+}
+
+/// The visual output of a module – what the renderer should draw.
+#[derive(Debug, Clone)]
 pub struct ModuleView {
     pub text: String,
+    pub text_segments: Vec<TextSegment>,
     pub style: TextStyle,
     pub background: Option<Color>,
     pub padding: (f64, f64), // (left, right)
@@ -39,12 +47,33 @@ impl Default for ModuleView {
     fn default() -> Self {
         Self {
             text: String::new(),
+            text_segments: Vec::new(),
             style: TextStyle::default(),
             background: None,
             padding: (8.0, 8.0),
             icons: Vec::new(),
             icon_spacing: 4.0,
         }
+    }
+}
+
+impl ModuleView {
+    pub fn text_width<R: Renderer>(&self, renderer: &R) -> f64 {
+        if self.text_segments.is_empty() {
+            renderer.measure_text(&self.text, &self.style)
+        } else {
+            self.text_segments
+                .iter()
+                .map(|segment| renderer.measure_text(&segment.text, &segment.style))
+                .sum()
+        }
+    }
+
+    pub fn text_height(&self) -> f64 {
+        self.text_segments
+            .iter()
+            .map(|segment| segment.style.font_size)
+            .fold(self.style.font_size, f64::max)
     }
 }
 
