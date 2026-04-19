@@ -28,7 +28,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::watch;
 use zbus::{Connection, ConnectionBuilder, interface, proxy};
 
-use super::{IconData, Module, ModuleView};
+use super::{IconData, Module, ModuleChrome, ModuleView};
 use crate::core::event::{ClickEvent, MouseButton};
 use crate::renderer::primitives::TextStyle;
 
@@ -92,22 +92,8 @@ impl StatusNotifierWatcher {
             .map(|s| s.to_string())
             .unwrap_or_else(|| service.to_string());
 
-        // Normalise: if the caller passed a bare object path, prepend the sender name.
-        let full = if service.starts_with('/') {
-            format!("{}{}", sender, service)
-        } else {
-            service.to_string()
-        };
-
-        {
-            let mut items = self.state.items.lock().unwrap();
-            if !items.contains(&full) {
-                items.push(full.clone());
-                log::info!("[tray] registered SNI item: {}", full);
-            }
-        }
-        let items = self.state.items.lock().unwrap().clone();
-        let _ = self.item_tx.send(items);
+        let full = normalize_registered_item(&sender, service);
+        insert_registered_item(&self.state, &self.item_tx, full);
         Ok(())
     }
 
@@ -121,13 +107,17 @@ impl StatusNotifierWatcher {
     }
 
     /// Remove an item when its owner disconnects.
-    async fn unregister_status_notifier_item(&mut self, service: &str) -> zbus::fdo::Result<()> {
-        {
-            let mut items = self.state.items.lock().unwrap();
-            items.retain(|s| s != service);
-        }
-        let items = self.state.items.lock().unwrap().clone();
-        let _ = self.item_tx.send(items);
+    async fn unregister_status_notifier_item(
+        &mut self,
+        service: &str,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header
+            .sender()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| service.to_string());
+        let full = normalize_registered_item(&sender, service);
+        remove_registered_item(&self.state, &self.item_tx, &full);
         Ok(())
     }
 
@@ -270,6 +260,102 @@ fn parse_sni_service(service: &str) -> (String, String) {
     }
 }
 
+fn normalize_registered_item(sender: &str, service: &str) -> String {
+    if service.starts_with('/') {
+        format!("{}{}", sender, service)
+    } else {
+        service.to_string()
+    }
+}
+
+fn mutate_items<F>(state: &WatcherState, item_tx: &watch::Sender<Vec<String>>, mutator: F) -> bool
+where
+    F: FnOnce(&mut Vec<String>) -> bool,
+{
+    let snapshot = {
+        let mut items = state.items.lock().unwrap();
+        if !mutator(&mut items) {
+            return false;
+        }
+        items.clone()
+    };
+    let _ = item_tx.send(snapshot);
+    true
+}
+
+fn insert_registered_item(
+    state: &WatcherState,
+    item_tx: &watch::Sender<Vec<String>>,
+    service: String,
+) {
+    let logged = service.clone();
+    if mutate_items(state, item_tx, move |items| {
+        if items.contains(&service) {
+            false
+        } else {
+            items.push(service);
+            true
+        }
+    }) {
+        log::info!("[tray] registered SNI item: {}", logged);
+    }
+}
+
+fn matches_registered_item(item: &str, service: &str) -> bool {
+    if item == service {
+        return true;
+    }
+
+    let (item_bus, item_path) = parse_sni_service(item);
+    if service.starts_with('/') {
+        return item_path == service;
+    }
+
+    let (service_bus, service_path) = parse_sni_service(service);
+    item_bus == service_bus && item_path == service_path
+}
+
+fn remove_registered_item(
+    state: &WatcherState,
+    item_tx: &watch::Sender<Vec<String>>,
+    service: &str,
+) {
+    mutate_items(state, item_tx, |items| {
+        let initial_len = items.len();
+        items.retain(|item| !matches_registered_item(item, service));
+        initial_len != items.len()
+    });
+}
+
+fn remove_items_for_bus_name(
+    state: &WatcherState,
+    item_tx: &watch::Sender<Vec<String>>,
+    bus_name: &str,
+) {
+    mutate_items(state, item_tx, |items| {
+        let initial_len = items.len();
+        items.retain(|item| parse_sni_service(item).0 != bus_name);
+        initial_len != items.len()
+    });
+}
+
+fn merge_registered_items(
+    state: &WatcherState,
+    item_tx: &watch::Sender<Vec<String>>,
+    services: Vec<String>,
+) {
+    mutate_items(state, item_tx, move |items| {
+        let mut changed = false;
+        for service in services {
+            if !items.contains(&service) {
+                items.push(service);
+                changed = true;
+            }
+        }
+        changed
+    });
+}
+
 /// Fetch the best icon for one SNI item.
 async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<IconData> {
     let (bus_name, object_path) = parse_sni_service(service);
@@ -325,10 +411,11 @@ pub struct TrayModule {
     conn: Arc<Mutex<Option<Connection>>>,
     /// Icon size (pixels).
     icon_size: u32,
+    chrome: ModuleChrome,
 }
 
 impl TrayModule {
-    pub fn new(icon_size: u32) -> Self {
+    pub fn new(icon_size: u32, chrome: ModuleChrome) -> Self {
         let rt = Arc::new(
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
@@ -362,6 +449,7 @@ impl TrayModule {
             current_items: Arc::new(Mutex::new(Vec::new())),
             conn: conn_cell,
             icon_size,
+            chrome,
         }
     }
 }
@@ -430,6 +518,12 @@ async fn run_watcher(
             let _ = watcher_proxy
                 .call_method("RegisterStatusNotifierHost", &(host_name.as_str(),))
                 .await;
+            if let Ok(items) = watcher_proxy
+                .get_property::<Vec<String>>("RegisteredStatusNotifierItems")
+                .await
+            {
+                merge_registered_items(&state, &item_tx, items);
+            }
         }
     }
 
@@ -441,46 +535,144 @@ async fn run_watcher(
 
     log::info!("[tray] StatusNotifierWatcher/Host registered on session bus");
 
-    // Subscribe to StatusNotifierItemRegistered signal so we discover items
-    // that were registered before (or after) we connected.
-    let rule = zbus::MatchRule::builder()
-        .msg_type(zbus::message::Type::Signal)
-        .interface("org.kde.StatusNotifierWatcher")
-        .and_then(|b| b.member("StatusNotifierItemRegistered"))
-        .map(|b| b.build());
-
-    if let Ok(rule) = rule {
-        match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
-            Ok(stream) => {
-                use futures_util::StreamExt;
-                let mut stream = Box::pin(stream);
-                loop {
-                    match stream.next().await {
-                        Some(Ok(msg)) => {
-                            if let Ok((service,)) = msg.body().deserialize::<(String,)>() {
-                                let mut items = state.items.lock().unwrap();
-                                if !items.contains(&service) {
-                                    items.push(service);
-                                }
-                                let snapshot = items.clone();
-                                drop(items);
-                                let _ = item_tx.send(snapshot);
-                            }
-                        }
-                        Some(Err(e)) => {
-                            log::warn!("[tray] signal stream error: {e}");
-                            break;
-                        }
-                        None => break,
-                    }
-                }
-            }
-            Err(e) => log::warn!("[tray] could not subscribe to SNI signals: {e}"),
-        }
-    }
+    tokio::spawn(watch_registered_signals(
+        conn.clone(),
+        state.clone(),
+        item_tx.clone(),
+    ));
+    tokio::spawn(watch_unregistered_signals(
+        conn.clone(),
+        state.clone(),
+        item_tx.clone(),
+    ));
+    tokio::spawn(watch_name_owner_changed_signals(conn, state, item_tx));
 
     // Keep the connection alive indefinitely.
     std::future::pending::<()>().await;
+}
+
+async fn watch_registered_signals(
+    conn: Connection,
+    state: WatcherState,
+    item_tx: watch::Sender<Vec<String>>,
+) {
+    let rule = match zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.kde.StatusNotifierWatcher")
+        .and_then(|b| b.member("StatusNotifierItemRegistered"))
+        .map(|b| b.build())
+    {
+        Ok(rule) => rule,
+        Err(e) => {
+            log::warn!("[tray] could not build SNI registration rule: {e}");
+            return;
+        }
+    };
+
+    match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
+        Ok(stream) => {
+            use futures_util::StreamExt;
+            let mut stream = Box::pin(stream);
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(msg) => {
+                        if let Ok((service,)) = msg.body().deserialize::<(String,)>() {
+                            insert_registered_item(&state, &item_tx, service);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[tray] registered-item stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        Err(e) => log::warn!("[tray] could not subscribe to item registrations: {e}"),
+    }
+}
+
+async fn watch_unregistered_signals(
+    conn: Connection,
+    state: WatcherState,
+    item_tx: watch::Sender<Vec<String>>,
+) {
+    let rule = match zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.kde.StatusNotifierWatcher")
+        .and_then(|b| b.member("StatusNotifierItemUnregistered"))
+        .map(|b| b.build())
+    {
+        Ok(rule) => rule,
+        Err(e) => {
+            log::warn!("[tray] could not build SNI unregistration rule: {e}");
+            return;
+        }
+    };
+
+    match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
+        Ok(stream) => {
+            use futures_util::StreamExt;
+            let mut stream = Box::pin(stream);
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(msg) => {
+                        if let Ok((service,)) = msg.body().deserialize::<(String,)>() {
+                            remove_registered_item(&state, &item_tx, &service);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[tray] unregistered-item stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        Err(e) => log::warn!("[tray] could not subscribe to item removals: {e}"),
+    }
+}
+
+async fn watch_name_owner_changed_signals(
+    conn: Connection,
+    state: WatcherState,
+    item_tx: watch::Sender<Vec<String>>,
+) {
+    let rule = match zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .interface("org.freedesktop.DBus")
+        .and_then(|b| b.member("NameOwnerChanged"))
+        .map(|b| b.build())
+    {
+        Ok(rule) => rule,
+        Err(e) => {
+            log::warn!("[tray] could not build NameOwnerChanged rule: {e}");
+            return;
+        }
+    };
+
+    match zbus::MessageStream::for_match_rule(rule, &conn, None).await {
+        Ok(stream) => {
+            use futures_util::StreamExt;
+            let mut stream = Box::pin(stream);
+            while let Some(message) = stream.next().await {
+                match message {
+                    Ok(msg) => {
+                        if let Ok((name, old_owner, new_owner)) =
+                            msg.body().deserialize::<(String, String, String)>()
+                        {
+                            if !old_owner.is_empty() && new_owner.is_empty() {
+                                remove_items_for_bus_name(&state, &item_tx, &name);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[tray] NameOwnerChanged stream error: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        Err(e) => log::warn!("[tray] could not subscribe to NameOwnerChanged: {e}"),
+    }
 }
 
 impl Module for TrayModule {
@@ -546,9 +738,9 @@ impl Module for TrayModule {
     fn click(&mut self, event: ClickEvent) {
         // Determine which icon slot was hit.
         // `event.x` is relative to the module's left edge (after padding).
-        let padding_left = 4.0_f64;
+        let padding_left = self.chrome.padding.0;
         let icon_size = self.icon_size as f64;
-        let spacing = 4.0_f64;
+        let spacing = self.chrome.icon_spacing.unwrap_or(4.0);
         let slot = icon_size + spacing;
 
         let rel = (event.x - padding_left).max(0.0);
@@ -570,8 +762,8 @@ impl Module for TrayModule {
             None => return,
         };
 
-        let x = event.x as i32;
-        let y = event.y as i32;
+        let x = event.screen_x as i32;
+        let y = event.screen_y as i32;
 
         match event.button {
             MouseButton::Left => {
@@ -631,14 +823,13 @@ impl Module for TrayModule {
 
     fn view(&self) -> ModuleView {
         let icons = self.current_icons.lock().unwrap().clone();
-        ModuleView {
+        self.chrome.apply(ModuleView {
             text: String::new(),
             text_segments: Vec::new(),
             style: TextStyle::default(),
             background: None,
-            padding: (4.0, 4.0),
             icons,
-            icon_spacing: 4.0,
-        }
+            ..Default::default()
+        })
     }
 }

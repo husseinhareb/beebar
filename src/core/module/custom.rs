@@ -1,19 +1,21 @@
 use std::process::Command;
 
-use super::{Module, ModuleView};
+use super::{Module, ModuleChrome, ModuleView};
 use crate::renderer::primitives::TextStyle;
 
 /// A module that runs an arbitrary shell command and displays its stdout.
 pub struct CustomModule {
     command: String,
     output: String,
+    chrome: ModuleChrome,
 }
 
 impl CustomModule {
-    pub fn new(command: impl Into<String>) -> Self {
+    pub fn new(command: impl Into<String>, chrome: ModuleChrome) -> Self {
         Self {
             command: command.into(),
             output: String::new(),
+            chrome,
         }
     }
 }
@@ -28,10 +30,10 @@ impl Module for CustomModule {
     }
 
     fn view(&self) -> ModuleView {
-        ModuleView {
+        self.chrome.apply(ModuleView {
             text: self.output.clone(),
             style: TextStyle::default(),
             ..Default::default()
-        }
+        })
     }
 }

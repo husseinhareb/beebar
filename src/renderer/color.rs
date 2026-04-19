@@ -1,5 +1,5 @@
 /// RGBA color (0.0–1.0 per channel).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub r: f64,
     pub g: f64,

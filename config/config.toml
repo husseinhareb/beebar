@@ -3,12 +3,14 @@
 height = 30
 background = "#1e1e2e"
 foreground = "#cdd6f4"
-font = "monospace"
+font = "JetBrainsMono Nerd Font"
 font_size = 14.0
+padding_left = 8.0
+padding_right = 8.0
 
 modules_left = ["clock"]
 modules_center = ["workspaces"]
-modules_right = ["tray", "cpu", "battery"]
+modules_right = ["tray", "brightness", "volume", "cpu", "battery"]
 
 [module.clock]
 type = "clock"
@@ -17,13 +19,61 @@ format = " %a %b %d  %H:%M:%S"
 [module.workspaces]
 type = "workspaces"
 count = 10
+# labels = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+active_color = "#f4d38a"
+occupied_color = "#91d7fa"
+empty_color = "#9097ab"
 
 [module.cpu]
 type = "cpu"
+icon = ""
+
+[module.volume]
+type = "volume"
+slider_width = 20
+icon_gap = 1
+filled_color = "#f4d38a"
+empty_color = "#8a91a3"
+muted_color = "#ec6b6b"
+unavailable_color = "#d06c6c"
+icon_muted = "󰝟"
+icon_unknown = ""
+icon_low = "󰕿"
+icon_medium = "󰖀"
+icon_high = "󰕾"
+icon_unavailable = ""
+glyph_left = "▐"
+glyph_filled = "█"
+glyph_empty = "░"
+glyph_right = "▌"
+
+[module.brightness]
+type = "brightness"
+slider_width = 20
+icon_gap = 1
+filled_color = "#f4d38a"
+empty_color = "#8a91a3"
+unavailable_color = "#d06c6c"
+icon_low = "󰃚"
+icon_medium = "󰃝"
+icon_high = "󰃠"
+icon_unknown = ""
+icon_unavailable = ""
+glyph_left = "▐"
+glyph_filled = "█"
+glyph_empty = "░"
+glyph_right = "▌"
 
 [module.battery]
 type = "battery"
+icon_low = "󰁻"
+icon_medium = "󰁾"
+icon_high = "󰂁"
+icon_full = "󰁹"
 
 [module.tray]
 type = "tray"
 icon_size = 22
+padding_left = 4.0
+padding_right = 4.0
+icon_spacing = 4.0

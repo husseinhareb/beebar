@@ -1,18 +1,63 @@
 use std::fs;
 
-use super::{Module, ModuleView};
+use super::{Module, ModuleChrome, ModuleView, prefix_text};
+use crate::core::config::ModuleConfig;
 use crate::renderer::primitives::TextStyle;
+
+#[derive(Debug, Clone)]
+pub struct BatteryIcons {
+    pub low: String,
+    pub medium: String,
+    pub high: String,
+    pub full: String,
+}
+
+impl Default for BatteryIcons {
+    fn default() -> Self {
+        Self {
+            low: "󰁻".to_string(),
+            medium: "󰁾".to_string(),
+            high: "󰂁".to_string(),
+            full: "󰁹".to_string(),
+        }
+    }
+}
+
+impl BatteryIcons {
+    pub fn from_config(config: &ModuleConfig) -> Self {
+        let mut icons = Self::default();
+
+        if let Some(value) = &config.icon_low {
+            icons.low = value.clone();
+        }
+        if let Some(value) = &config.icon_medium {
+            icons.medium = value.clone();
+        }
+        if let Some(value) = &config.icon_high {
+            icons.high = value.clone();
+        }
+        if let Some(value) = &config.icon_full {
+            icons.full = value.clone();
+        }
+
+        icons
+    }
+}
 
 pub struct BatteryModule {
     capacity: u8,
     status: String,
+    icons: BatteryIcons,
+    chrome: ModuleChrome,
 }
 
 impl BatteryModule {
-    pub fn new() -> Self {
+    pub fn new(icons: BatteryIcons, chrome: ModuleChrome) -> Self {
         Self {
             capacity: 0,
             status: String::from("Unknown"),
+            icons,
+            chrome,
         }
     }
 
@@ -33,15 +78,15 @@ impl Module for BatteryModule {
 
     fn view(&self) -> ModuleView {
         let icon = match self.capacity {
-            0..=20 => "",
-            21..=50 => "",
-            51..=80 => "",
-            _ => "",
+            0..=20 => &self.icons.low,
+            21..=50 => &self.icons.medium,
+            51..=80 => &self.icons.high,
+            _ => &self.icons.full,
         };
-        ModuleView {
-            text: format!("{} {}%", icon, self.capacity),
+        self.chrome.apply(ModuleView {
+            text: prefix_text(icon, &format!("{}%", self.capacity)),
             style: TextStyle::default(),
             ..Default::default()
-        }
+        })
     }
 }

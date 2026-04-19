@@ -23,7 +23,6 @@ use wayland_client::{
 use crate::core::bar::Bar;
 use crate::core::event::{ClickEvent, MouseButton};
 use crate::renderer::cairo_renderer::CairoRenderer;
-use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer};
 
 struct WaylandState {
@@ -115,7 +114,7 @@ pub fn run_layer_shell(bar: &mut Bar) {
 
     // Poll-based event loop: poll the Wayland fd with a short timeout so
     // workspace updates feel immediate without busy-spinning the renderer.
-    let update_interval = std::time::Duration::from_millis(100);
+    let update_interval = std::time::Duration::from_secs(1);
     let mut next_update = std::time::Instant::now();
 
     loop {
@@ -200,7 +199,6 @@ fn draw_frame(state: &mut WaylandState) {
     state.renderer.begin(width, height);
 
     // Background
-    let bg_color = Color::from_hex("#1e1e2e").unwrap_or(Color::BLACK);
     state.renderer.draw_rect(
         Rect {
             x: 0.0,
@@ -208,16 +206,14 @@ fn draw_frame(state: &mut WaylandState) {
             width: width as f64,
             height: height as f64,
         },
-        bg_color,
+        state.bar.background,
     );
 
     // Compute layout
     let layout = &state.bar.layout;
-    let modules = &state.bar.modules;
 
     let measure = |id: &String| -> f64 {
-        if let Some(m) = modules.get(id) {
-            let view = m.view();
+        if let Some(view) = state.bar.module_view(id) {
             if !view.icons.is_empty() {
                 let icon_size = height.saturating_sub(4) as f64;
                 let n = view.icons.len() as f64;
@@ -237,9 +233,7 @@ fn draw_frame(state: &mut WaylandState) {
 
     // Draw modules
     for region in &regions {
-        if let Some(module) = modules.get(&region.id) {
-            let view = module.view();
-
+        if let Some(view) = state.bar.module_view(&region.id) {
             if let Some(bg) = view.background {
                 state.renderer.draw_rect(
                     Rect {
@@ -457,7 +451,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
         _pointer: &wl_pointer::WlPointer,
         event: wl_pointer::Event,
         _: &(),
-        _: &Connection,
+        conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
         match event {
@@ -496,8 +490,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 let (px, py) = state.pointer_pos;
                 let click = ClickEvent {
                     x: px,
+                    screen_x: px,
                     module_width: 0.0,
                     y: py,
+                    screen_y: py,
                     button: mb,
                 };
 
@@ -506,10 +502,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 let height = state.height;
                 let icon_size_px = height.saturating_sub(4) as f64;
                 let regions = {
-                    let modules = &state.bar.modules;
                     let measure = |id: &String| -> f64 {
-                        if let Some(m) = modules.get(id) {
-                            let view = m.view();
+                        if let Some(view) = state.bar.module_view(id) {
                             if !view.icons.is_empty() {
                                 let n = view.icons.len() as f64;
                                 view.padding.0
@@ -526,6 +520,9 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                     state.bar.layout.compute(width as f64, &measure)
                 };
                 state.bar.handle_click(&regions, &click);
+                state.bar.update_all();
+                draw_frame(state);
+                conn.flush().ok();
             }
             _ => {}
         }

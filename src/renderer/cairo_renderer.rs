@@ -46,8 +46,7 @@ impl Renderer for CairoRenderer {
     fn draw_text(&mut self, pos: Point, text: &str, style: &TextStyle) -> f64 {
         let cr = self.cr.as_ref().expect("call begin() first");
         let layout = pangocairo::create_layout(cr);
-        let mut font_desc = FontDescription::new();
-        font_desc.set_family(&style.font_family);
+        let mut font_desc = FontDescription::from_string(&style.font_family);
         font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
@@ -72,8 +71,7 @@ impl Renderer for CairoRenderer {
             }
         };
         let layout = pangocairo::create_layout(cr);
-        let mut font_desc = FontDescription::new();
-        font_desc.set_family(&style.font_family);
+        let mut font_desc = FontDescription::from_string(&style.font_family);
         font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);

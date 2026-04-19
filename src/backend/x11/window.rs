@@ -1,3 +1,6 @@
+use std::thread;
+use std::time::{Duration, Instant};
+
 use x11rb::COPY_DEPTH_FROM_PARENT;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
@@ -7,7 +10,6 @@ use x11rb::wrapper::ConnectionExt as _;
 
 use crate::core::bar::Bar;
 use crate::renderer::cairo_renderer::CairoRenderer;
-use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer};
 
 /// EWMH atoms needed for dock behavior.
@@ -117,87 +119,93 @@ pub fn run_x11(bar: &mut Bar) {
     conn.create_gc(gc, win, &CreateGCAux::new()).unwrap();
 
     let mut renderer = CairoRenderer::new(width, height);
+    let update_interval = Duration::from_secs(1);
+    let idle_sleep = Duration::from_millis(16);
+    let mut next_update = Instant::now();
+    let mut needs_redraw = true;
 
     loop {
-        let event = conn.wait_for_event().expect("X11 event error");
-        match event {
-            Event::Expose(_) => {
-                bar.update_all();
-                render_bar(bar, &mut renderer, width, height);
+        while let Some(event) = conn.poll_for_event().expect("X11 event error") {
+            match event {
+                Event::Expose(_) => {
+                    needs_redraw = true;
+                }
+                Event::ButtonPress(ev) => {
+                    use crate::core::event::{ClickEvent, MouseButton};
+                    let button = match ev.detail {
+                        1 => MouseButton::Left,
+                        2 => MouseButton::Middle,
+                        3 => MouseButton::Right,
+                        n => MouseButton::Other(n as u32),
+                    };
+                    let click = ClickEvent {
+                        x: ev.event_x as f64,
+                        screen_x: ev.root_x as f64,
+                        module_width: 0.0,
+                        y: ev.event_y as f64,
+                        screen_y: ev.root_y as f64,
+                        button,
+                    };
 
-                // Put image data onto the window
-                let data = renderer.data();
-                conn.put_image(
-                    ImageFormat::Z_PIXMAP,
-                    win,
-                    gc,
-                    width as u16,
-                    height as u16,
-                    0,
-                    0,
-                    0,
-                    screen.root_depth,
-                    data,
-                )
-                .unwrap();
-                conn.flush().unwrap();
-            }
-            Event::ButtonPress(ev) => {
-                use crate::core::event::{ClickEvent, MouseButton};
-                let button = match ev.detail {
-                    1 => MouseButton::Left,
-                    2 => MouseButton::Middle,
-                    3 => MouseButton::Right,
-                    n => MouseButton::Other(n as u32),
-                };
-                let click = ClickEvent {
-                    x: ev.event_x as f64,
-                    module_width: 0.0,
-                    y: ev.event_y as f64,
-                    button,
-                };
-
-                let modules = &bar.modules;
-                let measure = |id: &String| -> f64 {
-                    if let Some(m) = modules.get(id) {
-                        let view = m.view();
-                        if !view.icons.is_empty() {
-                            let icon_size = height.saturating_sub(4) as f64;
-                            let n = view.icons.len() as f64;
-                            view.padding.0
-                                + view.padding.1
-                                + n * icon_size
-                                + (n - 1.0).max(0.0) * view.icon_spacing
+                    let measure = |id: &String| -> f64 {
+                        if let Some(view) = bar.module_view(id) {
+                            if !view.icons.is_empty() {
+                                let icon_size = height.saturating_sub(4) as f64;
+                                let n = view.icons.len() as f64;
+                                view.padding.0
+                                    + view.padding.1
+                                    + n * icon_size
+                                    + (n - 1.0).max(0.0) * view.icon_spacing
+                            } else {
+                                view.text_width(&renderer) + view.padding.0 + view.padding.1
+                            }
                         } else {
-                            view.text_width(&renderer) + view.padding.0 + view.padding.1
+                            0.0
                         }
-                    } else {
-                        0.0
-                    }
-                };
-                let regions = bar.layout.compute(width as f64, &measure);
-                bar.handle_click(&regions, &click);
-
-                // Trigger redraw
-                conn.send_event(
-                    false,
-                    win,
-                    EventMask::EXPOSURE,
-                    ExposeEvent {
-                        response_type: 12,
-                        sequence: 0,
-                        window: win,
-                        x: 0,
-                        y: 0,
-                        width: width as u16,
-                        height: height as u16,
-                        count: 0,
-                    },
-                )
-                .unwrap();
-                conn.flush().unwrap();
+                    };
+                    let regions = bar.layout.compute(width as f64, &measure);
+                    bar.handle_click(&regions, &click);
+                    bar.update_all();
+                    needs_redraw = true;
+                }
+                _ => {}
             }
-            _ => {}
+        }
+
+        let now = Instant::now();
+        if now >= next_update {
+            next_update = now + update_interval;
+            bar.update_all();
+            needs_redraw = true;
+        }
+
+        if needs_redraw {
+            render_bar(bar, &mut renderer, width, height);
+
+            // Put image data onto the window
+            let data = renderer.data();
+            conn.put_image(
+                ImageFormat::Z_PIXMAP,
+                win,
+                gc,
+                width as u16,
+                height as u16,
+                0,
+                0,
+                0,
+                screen.root_depth,
+                data,
+            )
+            .unwrap();
+            conn.flush().unwrap();
+            needs_redraw = false;
+        }
+
+        let sleep_for = next_update
+            .saturating_duration_since(Instant::now())
+            .min(idle_sleep);
+        if !sleep_for.is_zero() {
+            thread::sleep(sleep_for);
         }
     }
 }
@@ -206,7 +214,6 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
     renderer.begin(width, height);
 
     // Background
-    let bg_color = Color::from_hex("#1e1e2e").unwrap_or(Color::BLACK);
     renderer.draw_rect(
         Rect {
             x: 0.0,
@@ -214,13 +221,11 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
             width: width as f64,
             height: height as f64,
         },
-        bg_color,
+        bar.background,
     );
 
-    let modules = &bar.modules;
     let measure = |id: &String| -> f64 {
-        if let Some(m) = modules.get(id) {
-            let view = m.view();
+        if let Some(view) = bar.module_view(id) {
             if !view.icons.is_empty() {
                 let icon_size = height.saturating_sub(4) as f64;
                 let n = view.icons.len() as f64;
@@ -239,9 +244,7 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
     let regions = bar.layout.compute(width as f64, &measure);
 
     for region in &regions {
-        if let Some(module) = modules.get(&region.id) {
-            let view = module.view();
-
+        if let Some(view) = bar.module_view(&region.id) {
             if let Some(bg) = view.background {
                 renderer.draw_rect(
                     Rect {
