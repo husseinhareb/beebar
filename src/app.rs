@@ -10,6 +10,8 @@ use crate::core::module::brightness::BrightnessModule;
 use crate::core::module::clock::ClockModule;
 use crate::core::module::cpu::CpuModule;
 use crate::core::module::custom::CustomModule;
+use crate::core::module::memory::MemoryModule;
+use crate::core::module::network::NetworkModule;
 use crate::core::module::tray::TrayModule;
 use crate::core::module::volume::VolumeIcons;
 use crate::core::module::volume::VolumeModule;
@@ -40,8 +42,18 @@ fn build_module(
             Some(Box::new(ClockModule::new(fmt, chrome)))
         }
         "cpu" => Some(Box::new(CpuModule::new(chrome, mcfg.icon.clone()))),
+        "memory" => Some(Box::new(MemoryModule::new(
+            mcfg.format.clone(),
+            mcfg.icon.clone(),
+            chrome,
+        ))),
         "battery" => Some(Box::new(BatteryModule::new(
             BatteryIcons::from_config(mcfg),
+            chrome,
+        ))),
+        "network" => Some(Box::new(NetworkModule::new(
+            mcfg.interface.clone(),
+            mcfg.format.clone(),
             chrome,
         ))),
         "custom" => {

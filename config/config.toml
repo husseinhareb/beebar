@@ -8,9 +8,9 @@ font_size = 14.0
 padding_left = 8.0
 padding_right = 8.0
 
-modules_left = ["clock"]
+modules_left = ["clock","memory"]
 modules_center = ["workspaces"]
-modules_right = ["tray", "brightness", "volume", "cpu", "battery"]
+modules_right = ["network", "brightness", "volume", "cpu", "battery", "tray"]
 
 [module.clock]
 type = "clock"
@@ -27,6 +27,11 @@ empty_color = "#9097ab"
 [module.cpu]
 type = "cpu"
 icon = ""
+
+[module.memory]
+type = "memory"
+format = "{icon} {used}/{total}"
+# icon = "󰍛"
 
 [module.volume]
 type = "volume"
@@ -46,6 +51,11 @@ glyph_left = "▐"
 glyph_filled = "█"
 glyph_empty = "░"
 glyph_right = "▌"
+
+[module.network]
+type = "network"
+format = "↓ {download} ↑ {upload}"
+# interface = "wlp0s20f3"
 
 [module.brightness]
 type = "brightness"

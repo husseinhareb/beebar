@@ -3,6 +3,8 @@ pub mod brightness;
 pub mod clock;
 pub mod cpu;
 pub mod custom;
+pub mod memory;
+pub mod network;
 pub mod tray;
 pub mod volume;
 pub mod workspaces;
@@ -154,6 +156,7 @@ pub struct SliderGlyphs {
 }
 
 impl SliderGlyphs {
+    #[cfg(test)]
     pub fn new(
         left: impl Into<String>,
         filled: impl Into<String>,

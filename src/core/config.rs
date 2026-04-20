@@ -126,6 +126,9 @@ pub struct ModuleConfig {
     pub device: Option<String>,
 
     #[serde(default)]
+    pub interface: Option<String>,
+
+    #[serde(default)]
     pub active_color: Option<String>,
 
     #[serde(default)]

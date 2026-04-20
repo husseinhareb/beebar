@@ -17,6 +17,7 @@ const DEFAULT_SLIDER_WIDTH: usize = 20;
 const DEFAULT_MAX_VOLUME: u16 = 100;
 const MAX_ALLOWED_VOLUME: u16 = 200;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+#[cfg(test)]
 const PADDING: (f64, f64) = (8.0, 8.0);
 const DEFAULT_ICON_GAP_CHARS: usize = 1;
 const PERCENT_TOKEN_CHARS: usize = 4;
@@ -712,6 +713,7 @@ mod tests {
             max_brightness: None,
             backend: None,
             device: None,
+            interface: None,
             active_color: None,
             occupied_color: None,
             empty_color: None,

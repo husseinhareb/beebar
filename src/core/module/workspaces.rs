@@ -364,6 +364,7 @@ mod tests {
             max_brightness: None,
             backend: None,
             device: None,
+            interface: None,
             active_color: None,
             occupied_color: None,
             empty_color: None,
