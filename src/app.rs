@@ -12,6 +12,7 @@ use crate::core::module::cpu::CpuModule;
 use crate::core::module::custom::CustomModule;
 use crate::core::module::memory::MemoryModule;
 use crate::core::module::network::NetworkModule;
+use crate::core::module::playback::PlaybackModule;
 use crate::core::module::tray::TrayModule;
 use crate::core::module::volume::VolumeIcons;
 use crate::core::module::volume::VolumeModule;
@@ -45,6 +46,12 @@ fn build_module(
         "memory" => Some(Box::new(MemoryModule::new(
             mcfg.format.clone(),
             mcfg.icon.clone(),
+            chrome,
+        ))),
+        "playback" => Some(Box::new(PlaybackModule::new(
+            mcfg.format.clone(),
+            mcfg.icon.clone(),
+            mcfg.icon_unavailable.clone(),
             chrome,
         ))),
         "battery" => Some(Box::new(BatteryModule::new(

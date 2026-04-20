@@ -8,13 +8,19 @@ font_size = 14.0
 padding_left = 8.0
 padding_right = 8.0
 
-modules_left = ["clock","memory"]
+modules_left = ["clock", "playback", "memory"]
 modules_center = ["workspaces"]
 modules_right = ["network", "brightness", "volume", "cpu", "battery", "tray"]
 
 [module.clock]
 type = "clock"
 format = " %a %b %d  %H:%M:%S"
+
+[module.playback]
+type = "playback"
+format = "{icon} {track} {buttons}"
+# icon = ""
+# icon_unavailable = "󰎈"
 
 [module.workspaces]
 type = "workspaces"

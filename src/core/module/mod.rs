@@ -5,6 +5,7 @@ pub mod cpu;
 pub mod custom;
 pub mod memory;
 pub mod network;
+pub mod playback;
 pub mod tray;
 pub mod volume;
 pub mod workspaces;
