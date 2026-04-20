@@ -1,5 +1,6 @@
 # beebar config
 
+[bar.main]
 height = 30
 background = "#1e1e2e"
 foreground = "#cdd6f4"
@@ -7,10 +8,26 @@ font = "JetBrainsMono Nerd Font"
 font_size = 14.0
 padding_left = 8.0
 padding_right = 8.0
+text_y_offset = 0.0
 
-modules_left = ["clock", "playback", "memory"]
+modules_left = ["clock", "playback", "memory", "temperature"]
 modules_center = ["workspaces"]
 modules_right = ["network", "brightness", "volume", "cpu", "battery", "tray"]
+
+[bar.bottom]
+height = 24
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+font = "JetBrainsMono Nerd Font"
+font_size = 12.0
+padding_left = 8.0
+padding_right = 8.0
+text_y_offset = 0.0
+position = "bottom"
+
+modules_left = ["playback"]
+modules_center = []
+modules_right = ["battery"]
 
 [module.clock]
 type = "clock"
@@ -89,7 +106,15 @@ icon_full = "󰁹"
 
 [module.tray]
 type = "tray"
-icon_size = 22
+icon_size = 18
 padding_left = 4.0
 padding_right = 4.0
 icon_spacing = 4.0
+
+[module.temperature]
+type = "temperature"
+icon = ""
+warn_threshold = 80.0
+critical_threshold = 95.0
+warn_color = "#f4d38a"
+critical_color = "#ec6b6b"

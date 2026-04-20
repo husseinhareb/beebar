@@ -16,6 +16,7 @@ use crate::renderer::primitives::{Point, Rect, Renderer};
 struct Atoms {
     wm_window_type: Atom,
     wm_window_type_dock: Atom,
+    wm_strut: Atom,
     wm_strut_partial: Atom,
     wm_state: Atom,
     wm_state_sticky: Atom,
@@ -26,6 +27,7 @@ impl Atoms {
     fn intern(conn: &RustConnection) -> Self {
         let wm_window_type = Self::atom(conn, b"_NET_WM_WINDOW_TYPE");
         let wm_window_type_dock = Self::atom(conn, b"_NET_WM_WINDOW_TYPE_DOCK");
+        let wm_strut = Self::atom(conn, b"_NET_WM_STRUT");
         let wm_strut_partial = Self::atom(conn, b"_NET_WM_STRUT_PARTIAL");
         let wm_state = Self::atom(conn, b"_NET_WM_STATE");
         let wm_state_sticky = Self::atom(conn, b"_NET_WM_STATE_STICKY");
@@ -33,6 +35,7 @@ impl Atoms {
         Self {
             wm_window_type,
             wm_window_type_dock,
+            wm_strut,
             wm_strut_partial,
             wm_state,
             wm_state_sticky,
@@ -53,9 +56,18 @@ pub fn run_x11(bar: &mut Bar) {
     let (conn, screen_num) = RustConnection::connect(None).expect("Failed to connect to X server");
     let screen = &conn.setup().roots[screen_num];
 
-    let width = screen.width_in_pixels as u32;
+    let screen_width = screen.width_in_pixels as u32;
+    let screen_height = screen.height_in_pixels as u32;
+    let width = screen_width;
     let height = bar.height;
     bar.width = width;
+
+    // Place bar at top or bottom of the screen.
+    let y_pos: i16 = if bar.bottom {
+        (screen_height - height) as i16
+    } else {
+        0
+    };
 
     let win = conn.generate_id().unwrap();
     conn.create_window(
@@ -63,7 +75,7 @@ pub fn run_x11(bar: &mut Bar) {
         win,
         screen.root,
         0,
-        0,
+        y_pos,
         width as u16,
         height as u16,
         0,
@@ -97,17 +109,35 @@ pub fn run_x11(bar: &mut Bar) {
     )
     .unwrap();
 
-    // Strut: reserve space at the top
+    // Strut: reserve space at the top or bottom
+    let strut = if bar.bottom {
+        [0u32, 0, 0, height]
+    } else {
+        [0u32, 0, height, 0]
+    };
+    conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        atoms.wm_strut,
+        AtomEnum::CARDINAL,
+        &strut,
+    )
+    .unwrap();
+
     // _NET_WM_STRUT_PARTIAL: left, right, top, bottom,
     //   left_start_y, left_end_y, right_start_y, right_end_y,
     //   top_start_x, top_end_x, bottom_start_x, bottom_end_x
-    let strut = [0u32, 0, height, 0, 0, 0, 0, 0, 0, width, 0, 0];
+    let strut_partial = if bar.bottom {
+        [0u32, 0, 0, height, 0, 0, 0, 0, 0, 0, 0, width.saturating_sub(1)]
+    } else {
+        [0u32, 0, height, 0, 0, 0, 0, 0, 0, width.saturating_sub(1), 0, 0]
+    };
     conn.change_property32(
         PropMode::REPLACE,
         win,
         atoms.wm_strut_partial,
         AtomEnum::CARDINAL,
-        &strut,
+        &strut_partial,
     )
     .unwrap();
 
@@ -150,7 +180,7 @@ pub fn run_x11(bar: &mut Bar) {
                     let measure = |id: &String| -> f64 {
                         if let Some(view) = bar.module_view(id) {
                             if !view.icons.is_empty() {
-                                let icon_size = height.saturating_sub(4) as f64;
+                                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
                                 let n = view.icons.len() as f64;
                                 view.padding.0
                                     + view.padding.1
@@ -227,7 +257,7 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
     let measure = |id: &String| -> f64 {
         if let Some(view) = bar.module_view(id) {
             if !view.icons.is_empty() {
-                let icon_size = height.saturating_sub(4) as f64;
+                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
                 let n = view.icons.len() as f64;
                 view.padding.0
                     + view.padding.1
@@ -258,7 +288,7 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
             }
 
             if !view.icons.is_empty() {
-                let icon_size = height.saturating_sub(4);
+                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4));
                 let mut ix = region.x + view.padding.0;
                 let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
                 for icon_data in &view.icons {
@@ -272,7 +302,7 @@ fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) 
                     ix += icon_size as f64 + view.icon_spacing;
                 }
             } else {
-                let y = (height as f64 - view.text_height()) / 2.0;
+                let y = (height as f64 - view.text_height(renderer)) / 2.0 + bar.text_y_offset;
                 let mut x = region.x + view.padding.0;
                 if view.text_segments.is_empty() {
                     renderer.draw_text(Point { x, y }, &view.text, &view.style);

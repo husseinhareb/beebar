@@ -1,5 +1,6 @@
 use crate::core::bar::Bar;
 use crate::core::config::Config;
+use crate::core::config::BarConfig;
 use crate::core::config::ModuleConfig;
 use crate::core::layout::Alignment;
 use crate::core::module::ModuleChrome;
@@ -13,6 +14,8 @@ use crate::core::module::custom::CustomModule;
 use crate::core::module::memory::MemoryModule;
 use crate::core::module::network::NetworkModule;
 use crate::core::module::playback::PlaybackModule;
+use crate::core::module::temperature::TemperatureIcons;
+use crate::core::module::temperature::TemperatureModule;
 use crate::core::module::tray::TrayModule;
 use crate::core::module::volume::VolumeIcons;
 use crate::core::module::volume::VolumeModule;
@@ -57,6 +60,15 @@ fn build_module(
         "battery" => Some(Box::new(BatteryModule::new(
             BatteryIcons::from_config(mcfg),
             chrome,
+        ))),
+        "temperature" => Some(Box::new(TemperatureModule::new(
+            mcfg.format.clone(),
+            TemperatureIcons::from_config(mcfg),
+            mcfg.sensor.clone(),
+            mcfg.warn_threshold,
+            mcfg.critical_threshold,
+            chrome,
+            mcfg,
         ))),
         "network" => Some(Box::new(NetworkModule::new(
             mcfg.interface.clone(),
@@ -138,21 +150,27 @@ fn add_ordered_modules(
 }
 
 /// Build a `Bar` from the loaded configuration.
-pub fn build_bar(config: &Config) -> Bar {
-    let mut bar = Bar::new(1920, config.height);
-    let default_padding = config.resolved_padding();
-    bar.background = config.resolved_background_color();
+pub fn build_bar(name: &str, bar_config: &BarConfig, config: &Config) -> Bar {
+    let mut bar = Bar::new(1920, bar_config.height);
+    bar.name = name.to_string();
+    bar.bottom = bar_config.is_bottom();
+    bar.text_y_offset = bar_config.text_y_offset;
+    let default_padding = bar_config.resolved_padding();
+    bar.background = bar_config.resolved_background_color();
     bar.text_style = TextStyle {
-        color: config.resolved_foreground_color(),
-        font_family: config.resolved_font_family(),
-        font_size: config.resolved_font_size(),
+        color: bar_config.resolved_foreground_color(),
+        font_family: bar_config.resolved_font_family(),
+        font_size: bar_config.resolved_font_size(),
         ..TextStyle::default()
     };
 
     log::info!(
-        "Using bar font '{}' at {}px",
+        "[bar/{}] font='{}' size={}px height={} position={}",
+        name,
         bar.text_style.font_family,
-        bar.text_style.font_size
+        bar.text_style.font_size,
+        bar_config.height,
+        bar_config.position,
     );
 
     let mut placed = HashSet::new();
@@ -160,7 +178,7 @@ pub fn build_bar(config: &Config) -> Bar {
     add_ordered_modules(
         &mut bar,
         config,
-        &config.modules_left,
+        &bar_config.modules_left,
         Alignment::Left,
         default_padding,
         &mut placed,
@@ -168,7 +186,7 @@ pub fn build_bar(config: &Config) -> Bar {
     add_ordered_modules(
         &mut bar,
         config,
-        &config.modules_center,
+        &bar_config.modules_center,
         Alignment::Center,
         default_padding,
         &mut placed,
@@ -176,41 +194,41 @@ pub fn build_bar(config: &Config) -> Bar {
     add_ordered_modules(
         &mut bar,
         config,
-        &config.modules_right,
+        &bar_config.modules_right,
         Alignment::Right,
         default_padding,
         &mut placed,
     );
 
-    for (name, mcfg) in &config.module {
-        if placed.contains(name) {
-            continue;
-        }
-
-        log::warn!(
-            "Module '{}' not placed in any section, defaulting to left",
-            name
-        );
-
-        let Some(module) = build_module(name, mcfg, default_padding) else {
-            continue;
-        };
-
-        bar.add_module(name.clone(), module, Alignment::Left);
-    }
-
     bar
+}
+
+/// Build all bars defined in the config.
+pub fn build_bars(config: &Config) -> Vec<Bar> {
+    let mut bars = Vec::new();
+    // Sort by name for deterministic ordering.
+    let mut names: Vec<&String> = config.bar.keys().collect();
+    names.sort();
+    for name in names {
+        let bar_config = &config.bar[name];
+        bars.push(build_bar(name, bar_config, config));
+    }
+    if bars.is_empty() {
+        log::warn!("No [bar.*] sections found in config; nothing to display");
+    }
+    bars
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_bar;
+    use super::build_bars;
     use crate::core::config::Config;
 
     #[test]
     fn preserves_module_order_from_section_lists() {
         let config: Config = toml::from_str(
             r#"
+[bar.main]
 height = 30
 modules_right = ["brightness", "battery", "volume", "cpu"]
 
@@ -229,7 +247,9 @@ type = "brightness"
         )
         .expect("test config should parse");
 
-        let bar = build_bar(&config);
+        let bars = build_bars(&config);
+        assert_eq!(bars.len(), 1);
+        let bar = &bars[0];
 
         assert_eq!(
             bar.layout.right,

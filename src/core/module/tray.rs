@@ -26,13 +26,19 @@ use std::sync::{Arc, Mutex};
 
 use tokio::runtime::Runtime;
 use tokio::sync::watch;
-use zbus::{Connection, ConnectionBuilder, interface, proxy};
+use zbus::{
+    Connection, ConnectionBuilder, interface, proxy,
+    zvariant::{OwnedObjectPath, OwnedValue},
+};
 
-use super::{IconData, Module, ModuleChrome, ModuleView};
+use super::{IconData, Module, ModuleChrome, ModuleView, TextSegment, char_len};
 use crate::core::event::{ClickEvent, MouseButton};
+use crate::renderer::color::Color;
 use crate::renderer::primitives::TextStyle;
 
 // ─── DBus proxy for a StatusNotifierItem ────────────────────────────────────
+
+type DbusMenuLayout = (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>);
 
 #[proxy(
     interface = "org.kde.StatusNotifierItem",
@@ -55,6 +61,9 @@ trait StatusNotifierItem {
     #[zbus(property)]
     fn status(&self) -> zbus::Result<String>;
 
+    #[zbus(property)]
+    fn menu(&self) -> zbus::Result<OwnedObjectPath>;
+
     /// Show the application or bring its window to the foreground.
     async fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
 
@@ -63,6 +72,20 @@ trait StatusNotifierItem {
 
     /// Middle-click action (alternate activation).
     async fn secondary_activate(&self, x: i32, y: i32) -> zbus::Result<()>;
+}
+
+#[proxy(interface = "com.canonical.dbusmenu")]
+trait DbusMenu {
+    fn get_layout(
+        &self,
+        parent_id: i32,
+        recursion_depth: i32,
+        property_names: Vec<&str>,
+    ) -> zbus::Result<(u32, DbusMenuLayout)>;
+
+    fn event(&self, id: i32, event_id: &str, data: OwnedValue, timestamp: u32) -> zbus::Result<()>;
+
+    fn about_to_show(&self, id: i32) -> zbus::Result<bool>;
 }
 
 // ─── StatusNotifierWatcher interface implementation ──────────────────────────
@@ -173,6 +196,26 @@ fn decode_sni_pixmap(width: i32, height: i32, raw: &[u8]) -> Option<IconData> {
 /// Try to load an icon by name from the XDG icon theme.
 /// Falls back to returning `None` if the icon cannot be found.
 fn load_icon_by_name(name: &str, theme_path: &str, size: u32) -> Option<IconData> {
+    // Some AppIndicator implementations publish IconName as a real file path
+    // instead of a theme icon name. Handle those directly before falling back
+    // to theme lookups.
+    let normalized_name = name.strip_prefix("file://").unwrap_or(name);
+    let icon_path = std::path::Path::new(normalized_name);
+    if icon_path.is_absolute() && icon_path.exists() {
+        if let Some(data) = load_image_file(icon_path, size) {
+            return Some(data);
+        }
+    }
+
+    if !theme_path.is_empty() {
+        let themed_path = std::path::Path::new(theme_path).join(icon_path);
+        if themed_path.exists() {
+            if let Some(data) = load_image_file(&themed_path, size) {
+                return Some(data);
+            }
+        }
+    }
+
     // Build a list of candidate paths.
     let mut search_dirs: Vec<std::path::PathBuf> = Vec::new();
     if !theme_path.is_empty() {
@@ -250,6 +293,25 @@ fn load_image_file(path: &std::path::Path, size: u32) -> Option<IconData> {
 }
 
 // ─── Icon fetching ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+struct InlineTrayMenuItem {
+    id: i32,
+    label: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct InlineTrayMenu {
+    service: String,
+    items: Vec<InlineTrayMenuItem>,
+}
+
+#[derive(Debug, Clone)]
+struct InlineMenuToken {
+    text: String,
+    item_idx: Option<usize>,
+}
 
 /// Parse an SNI service string into (bus_name, object_path).
 fn parse_sni_service(service: &str) -> (String, String) {
@@ -356,6 +418,172 @@ fn merge_registered_items(
     });
 }
 
+fn menu_prop_string(props: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    props
+        .get(key)
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| String::try_from(value).ok())
+}
+
+fn menu_prop_bool(props: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
+    props.get(key).and_then(|value| bool::try_from(value).ok())
+}
+
+fn clean_menu_label(label: String) -> String {
+    let mut normalized = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '_' {
+            if matches!(chars.peek(), Some('_')) {
+                normalized.push('_');
+                chars.next();
+            }
+            continue;
+        }
+
+        if ch == '\t' {
+            normalized.push(' ');
+        } else {
+            normalized.push(ch);
+        }
+    }
+
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn parse_inline_menu_item(value: OwnedValue) -> Option<InlineTrayMenuItem> {
+    let (id, props, _children): DbusMenuLayout = value.try_into().ok()?;
+    if !menu_prop_bool(&props, "visible").unwrap_or(true) {
+        return None;
+    }
+
+    if matches!(
+        menu_prop_string(&props, "type").as_deref(),
+        Some("separator")
+    ) {
+        return None;
+    }
+
+    let label = clean_menu_label(menu_prop_string(&props, "label")?);
+    if label.is_empty() {
+        return None;
+    }
+
+    Some(InlineTrayMenuItem {
+        id,
+        label,
+        enabled: menu_prop_bool(&props, "enabled").unwrap_or(true),
+    })
+}
+
+fn inline_menu_tokens(menu: &InlineTrayMenu) -> Vec<InlineMenuToken> {
+    let mut tokens = Vec::new();
+    for (idx, item) in menu.items.iter().enumerate() {
+        if idx > 0 {
+            tokens.push(InlineMenuToken {
+                text: " | ".to_string(),
+                item_idx: None,
+            });
+        }
+        tokens.push(InlineMenuToken {
+            text: item.label.clone(),
+            item_idx: Some(idx),
+        });
+    }
+    tokens
+}
+
+async fn fetch_inline_menu(conn: &Connection, service: &str) -> Option<InlineTrayMenu> {
+    let (bus_name, object_path) = parse_sni_service(service);
+    let proxy = StatusNotifierItemProxy::builder(conn)
+        .destination(bus_name.clone())
+        .ok()?
+        .path(object_path)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+
+    let menu_path = proxy.menu().await.ok()?;
+    let menu_proxy = DbusMenuProxy::builder(conn)
+        .destination(bus_name)
+        .ok()?
+        .path(menu_path)
+        .ok()?
+        .build()
+        .await
+        .ok()?;
+
+    let _ = menu_proxy.about_to_show(0).await;
+    let (_, layout) = menu_proxy
+        .get_layout(0, 1, vec!["label", "enabled", "visible", "type"])
+        .await
+        .ok()?;
+
+    let (_, _, children) = layout;
+    let items = children
+        .into_iter()
+        .filter_map(parse_inline_menu_item)
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+
+    Some(InlineTrayMenu {
+        service: service.to_string(),
+        items,
+    })
+}
+
+async fn trigger_inline_menu_item(conn: &Connection, service: &str, item_id: i32) {
+    let (bus_name, object_path) = parse_sni_service(service);
+    let proxy = match StatusNotifierItemProxy::builder(conn)
+        .destination(bus_name.clone())
+        .ok()
+        .and_then(|builder| builder.path(object_path).ok())
+    {
+        Some(builder) => match builder.build().await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                log::debug!("[tray] failed to build menu proxy: {error}");
+                return;
+            }
+        },
+        None => return,
+    };
+
+    let menu_path = match proxy.menu().await {
+        Ok(path) => path,
+        Err(error) => {
+            log::debug!("[tray] failed to get menu path: {error}");
+            return;
+        }
+    };
+
+    let menu_proxy = match DbusMenuProxy::builder(conn)
+        .destination(bus_name)
+        .ok()
+        .and_then(|builder| builder.path(menu_path).ok())
+    {
+        Some(builder) => match builder.build().await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                log::debug!("[tray] failed to build dbusmenu proxy: {error}");
+                return;
+            }
+        },
+        None => return,
+    };
+
+    let _ = menu_proxy.about_to_show(item_id).await;
+    if let Err(error) = menu_proxy
+        .event(item_id, "clicked", OwnedValue::from(0i32), 0)
+        .await
+    {
+        log::debug!("[tray] failed to dispatch dbusmenu click: {error}");
+    }
+}
+
 /// Fetch the best icon for one SNI item.
 async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<IconData> {
     let (bus_name, object_path) = parse_sni_service(service);
@@ -407,6 +635,8 @@ pub struct TrayModule {
     current_icons: Arc<Mutex<Vec<IconData>>>,
     /// Service names in the same order as `current_icons` (for click dispatch).
     current_items: Arc<Mutex<Vec<String>>>,
+    /// Inline menu shown when a tray item exposes dbusmenu instead of ContextMenu.
+    inline_menu: Arc<Mutex<Option<InlineTrayMenu>>>,
     /// DBus connection shared with the fetch tasks.
     conn: Arc<Mutex<Option<Connection>>>,
     /// Icon size (pixels).
@@ -447,6 +677,7 @@ impl TrayModule {
             icon_cache,
             current_icons: Arc::new(Mutex::new(Vec::new())),
             current_items: Arc::new(Mutex::new(Vec::new())),
+            inline_menu: Arc::new(Mutex::new(None)),
             conn: conn_cell,
             icon_size,
             chrome,
@@ -680,6 +911,16 @@ impl Module for TrayModule {
         // Snapshot the current item list.
         let items: Vec<String> = self.item_rx.borrow().clone();
 
+        {
+            let mut inline_menu = self.inline_menu.lock().unwrap();
+            if inline_menu
+                .as_ref()
+                .is_some_and(|menu| !items.contains(&menu.service))
+            {
+                inline_menu.take();
+            }
+        }
+
         let icon_cache = self.icon_cache.clone();
         let current_icons = self.current_icons.clone();
         let current_items = self.current_items.clone();
@@ -736,6 +977,62 @@ impl Module for TrayModule {
     }
 
     fn click(&mut self, event: ClickEvent) {
+        if let Some(menu) = self.inline_menu.lock().unwrap().clone() {
+            let tokens = inline_menu_tokens(&menu);
+            let content_width =
+                (event.module_width - self.chrome.padding.0 - self.chrome.padding.1).max(0.0);
+            let rel_x = event.x - self.chrome.padding.0;
+
+            if event.button == MouseButton::Right {
+                self.inline_menu.lock().unwrap().take();
+                return;
+            }
+
+            if content_width <= 0.0 || !(0.0..content_width).contains(&rel_x) {
+                self.inline_menu.lock().unwrap().take();
+                return;
+            }
+
+            let total_chars = tokens
+                .iter()
+                .map(|token| char_len(&token.text))
+                .sum::<usize>() as f64;
+            if total_chars <= 0.0 {
+                self.inline_menu.lock().unwrap().take();
+                return;
+            }
+
+            let char_width = content_width / total_chars;
+            let mut cursor = 0.0;
+            let mut selected_item = None;
+            for token in tokens {
+                let token_width = char_len(&token.text) as f64 * char_width;
+                if rel_x < cursor + token_width {
+                    selected_item = token.item_idx;
+                    break;
+                }
+                cursor += token_width;
+            }
+
+            let menu_item = selected_item.and_then(|idx| menu.items.get(idx).cloned());
+            self.inline_menu.lock().unwrap().take();
+
+            if event.button == MouseButton::Left {
+                if let Some(item) = menu_item.filter(|item| item.enabled) {
+                    let conn = match self.conn.lock().unwrap().clone() {
+                        Some(c) => c,
+                        None => return,
+                    };
+                    let service = menu.service.clone();
+                    self.rt.spawn(async move {
+                        trigger_inline_menu_item(&conn, &service, item.id).await;
+                    });
+                }
+            }
+
+            return;
+        }
+
         // Determine which icon slot was hit.
         // `event.x` is relative to the module's left edge (after padding).
         let padding_left = self.chrome.padding.0;
@@ -784,6 +1081,7 @@ impl Module for TrayModule {
                 });
             }
             MouseButton::Right => {
+                let inline_menu = self.inline_menu.clone();
                 self.rt.spawn(async move {
                     let (bus, path) = parse_sni_service(&service);
                     let proxy = StatusNotifierItemProxy::builder(&conn)
@@ -793,7 +1091,11 @@ impl Module for TrayModule {
                     if let Some(builder) = proxy {
                         match builder.build().await {
                             Ok(p) => {
-                                let _ = p.context_menu(x, y).await;
+                                if let Err(error) = p.context_menu(x, y).await {
+                                    log::debug!("[tray] context_menu unavailable, falling back to dbusmenu: {error}");
+                                    let menu = fetch_inline_menu(&conn, &service).await;
+                                    *inline_menu.lock().unwrap() = menu;
+                                }
                             }
                             Err(e) => log::debug!("[tray] proxy build: {e}"),
                         }
@@ -822,6 +1124,40 @@ impl Module for TrayModule {
     }
 
     fn view(&self) -> ModuleView {
+        if let Some(menu) = self.inline_menu.lock().unwrap().clone() {
+            let base_style = TextStyle::default();
+            let disabled_style = TextStyle {
+                color: Color::rgb(0.55, 0.55, 0.55),
+                ..TextStyle::default()
+            };
+            let text_segments = inline_menu_tokens(&menu)
+                .into_iter()
+                .map(|token| {
+                    let style = match token.item_idx.and_then(|idx| menu.items.get(idx)) {
+                        Some(item) if !item.enabled => disabled_style.clone(),
+                        _ => base_style.clone(),
+                    };
+                    TextSegment {
+                        text: token.text,
+                        style,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let text = text_segments
+                .iter()
+                .map(|segment| segment.text.as_str())
+                .collect::<String>();
+
+            return self.chrome.apply(ModuleView {
+                text,
+                text_segments,
+                style: base_style,
+                background: None,
+                icons: Vec::new(),
+                ..Default::default()
+            });
+        }
+
         let icons = self.current_icons.lock().unwrap().clone();
         self.chrome.apply(ModuleView {
             text: String::new(),
@@ -829,6 +1165,7 @@ impl Module for TrayModule {
             style: TextStyle::default(),
             background: None,
             icons,
+            icon_size: Some(self.icon_size),
             ..Default::default()
         })
     }

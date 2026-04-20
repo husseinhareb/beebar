@@ -48,6 +48,9 @@ pub trait Renderer {
     /// Measure the width of text without drawing.
     fn measure_text(&self, text: &str, style: &TextStyle) -> f64;
 
+    /// Measure the height of text without drawing.
+    fn measure_text_height(&self, text: &str, style: &TextStyle) -> f64;
+
     /// Finish the frame.
     fn end(&mut self);
 

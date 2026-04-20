@@ -56,10 +56,15 @@ pub fn run_layer_shell(bar: &mut Bar) {
 
     let height = bar.height;
     let width = bar.width;
+    let bottom = bar.bottom;
 
     let layer_surface =
         layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("beebar"), None);
-    layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+    if bottom {
+        layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+    } else {
+        layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+    }
     layer_surface.set_size(0, height);
     layer_surface.set_exclusive_zone(height as i32);
     layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -215,7 +220,7 @@ fn draw_frame(state: &mut WaylandState) {
     let measure = |id: &String| -> f64 {
         if let Some(view) = state.bar.module_view(id) {
             if !view.icons.is_empty() {
-                let icon_size = height.saturating_sub(4) as f64;
+                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
                 let n = view.icons.len() as f64;
                 view.padding.0
                     + view.padding.1
@@ -248,7 +253,7 @@ fn draw_frame(state: &mut WaylandState) {
 
             if !view.icons.is_empty() {
                 // Render tray icons side by side.
-                let icon_size = height.saturating_sub(4);
+                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4));
                 let mut ix = region.x + view.padding.0;
                 let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
                 for icon_data in &view.icons {
@@ -262,7 +267,7 @@ fn draw_frame(state: &mut WaylandState) {
                     ix += icon_size as f64 + view.icon_spacing;
                 }
             } else {
-                let y = (height as f64 - view.text_height()) / 2.0;
+                let y = (height as f64 - view.text_height(&state.renderer)) / 2.0 + state.bar.text_y_offset;
                 let mut x = region.x + view.padding.0;
                 if view.text_segments.is_empty() {
                     state
@@ -500,11 +505,11 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 // Compute layout regions using immutable borrows of bar + renderer.
                 let width = state.width;
                 let height = state.height;
-                let icon_size_px = height.saturating_sub(4) as f64;
                 let regions = {
                     let measure = |id: &String| -> f64 {
                         if let Some(view) = state.bar.module_view(id) {
                             if !view.icons.is_empty() {
+                                let icon_size_px = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
                                 let n = view.icons.len() as f64;
                                 view.padding.0
                                     + view.padding.1

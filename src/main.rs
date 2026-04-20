@@ -9,10 +9,15 @@ fn main() {
     log::info!("beebar starting");
 
     let config = core::config::Config::load();
-    let bar = app::build_bar(&config);
+    let bars = app::build_bars(&config);
+
+    if bars.is_empty() {
+        log::error!("No bars defined in config; exiting");
+        std::process::exit(1);
+    }
 
     let backend_kind = backend::detect_backend();
     log::info!("Detected backend: {:?}", backend_kind);
 
-    backend::run(bar, backend_kind);
+    backend::run(bars, backend_kind);
 }

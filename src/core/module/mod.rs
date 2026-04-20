@@ -6,6 +6,7 @@ pub mod custom;
 pub mod memory;
 pub mod network;
 pub mod playback;
+pub mod temperature;
 pub mod tray;
 pub mod volume;
 pub mod workspaces;
@@ -45,6 +46,8 @@ pub struct ModuleView {
     /// Icon-only slots used by modules like the system tray.
     /// When non-empty the renderer draws icons instead of (or alongside) text.
     pub icons: Vec<IconData>,
+    /// Override the visual icon rendering size
+    pub icon_size: Option<u32>,
     /// Per-icon spacing (pixels between icons).
     pub icon_spacing: f64,
 }
@@ -58,6 +61,7 @@ impl Default for ModuleView {
             background: None,
             padding: (8.0, 8.0),
             icons: Vec::new(),
+            icon_size: None,
             icon_spacing: 4.0,
         }
     }
@@ -75,11 +79,15 @@ impl ModuleView {
         }
     }
 
-    pub fn text_height(&self) -> f64 {
-        self.text_segments
-            .iter()
-            .map(|segment| segment.style.font_size)
-            .fold(self.style.font_size, f64::max)
+    pub fn text_height<R: Renderer>(&self, renderer: &R) -> f64 {
+        if self.text_segments.is_empty() {
+            renderer.measure_text_height(&self.text, &self.style)
+        } else {
+            self.text_segments
+                .iter()
+                .map(|segment| renderer.measure_text_height(&segment.text, &segment.style))
+                .fold(renderer.measure_text_height(&self.text, &self.style), f64::max)
+        }
     }
 }
 

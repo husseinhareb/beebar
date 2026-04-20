@@ -12,8 +12,8 @@ const DEFAULT_FONT_FAMILY: &str = "monospace";
 const DEFAULT_FONT_SIZE: f64 = 14.0;
 const DEFAULT_PADDING: f64 = 8.0;
 
-#[derive(Debug, Deserialize)]
-pub struct Config {
+#[derive(Debug, Deserialize, Clone)]
+pub struct BarConfig {
     #[serde(default = "default_height")]
     pub height: u32,
 
@@ -29,11 +29,22 @@ pub struct Config {
     #[serde(default = "default_font_size")]
     pub font_size: f64,
 
+    #[serde(default)]
+    pub text_y_offset: f64,
+
     #[serde(default = "default_padding")]
     pub padding_left: f64,
 
     #[serde(default = "default_padding")]
     pub padding_right: f64,
+
+    /// Position of the bar: "top" (default) or "bottom".
+    #[serde(default = "default_position")]
+    pub position: String,
+
+    /// Monitor name to display on (e.g. "HDMI-1"). Empty = primary/first.
+    #[serde(default)]
+    pub monitor: Option<String>,
 
     #[serde(default)]
     pub modules_left: Vec<String>,
@@ -43,6 +54,23 @@ pub struct Config {
 
     #[serde(default)]
     pub modules_right: Vec<String>,
+}
+
+fn default_position() -> String {
+    "top".to_string()
+}
+
+impl BarConfig {
+    /// Returns true if the bar is positioned at the bottom.
+    pub fn is_bottom(&self) -> bool {
+        self.position.eq_ignore_ascii_case("bottom")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Config {
+    #[serde(default)]
+    pub bar: std::collections::HashMap<String, BarConfig>,
 
     #[serde(default)]
     pub module: std::collections::HashMap<String, ModuleConfig>,
@@ -129,6 +157,15 @@ pub struct ModuleConfig {
     pub interface: Option<String>,
 
     #[serde(default)]
+    pub sensor: Option<String>,
+
+    #[serde(default)]
+    pub warn_threshold: Option<f32>,
+
+    #[serde(default)]
+    pub critical_threshold: Option<f32>,
+
+    #[serde(default)]
     pub active_color: Option<String>,
 
     #[serde(default)]
@@ -145,6 +182,12 @@ pub struct ModuleConfig {
 
     #[serde(default)]
     pub unavailable_color: Option<String>,
+
+    #[serde(default)]
+    pub warn_color: Option<String>,
+
+    #[serde(default)]
+    pub critical_color: Option<String>,
 
     #[serde(default)]
     pub glyph_left: Option<String>,
@@ -198,7 +241,9 @@ impl Config {
         log::warn!("No config file found in any searched location, using bundled defaults");
         toml::from_str(BUNDLED_DEFAULT_CONFIG).expect("Failed to parse bundled default config")
     }
+}
 
+impl BarConfig {
     pub fn resolved_font_family(&self) -> String {
         let family = self.font.trim();
         if family.is_empty() {

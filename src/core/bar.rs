@@ -8,23 +8,31 @@ use crate::renderer::primitives::TextStyle;
 
 /// Central bar state – owns all modules and the layout.
 pub struct Bar {
+    /// Human-readable name of this bar (from config key).
+    pub name: String,
     pub modules: HashMap<ModuleId, Box<dyn Module>>,
     pub layout: BarLayout,
     pub height: u32,
     pub width: u32,
     pub background: Color,
     pub text_style: TextStyle,
+    pub text_y_offset: f64,
+    /// If true, the bar is anchored to the bottom of the screen.
+    pub bottom: bool,
 }
 
 impl Bar {
     pub fn new(width: u32, height: u32) -> Self {
         Self {
+            name: String::new(),
             modules: HashMap::new(),
             layout: BarLayout::default(),
             height,
             width,
             background: Color::BLACK,
             text_style: TextStyle::default(),
+            text_y_offset: 0.0,
+            bottom: false,
         }
     }
 

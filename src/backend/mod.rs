@@ -23,13 +23,13 @@ pub enum BackendKind {
     X11,
 }
 
-/// Create and run the bar with the appropriate backend.
-pub fn run(bar: Bar, kind: BackendKind) {
+/// Create and run all bars with the appropriate backend.
+pub fn run(bars: Vec<Bar>, kind: BackendKind) {
     match kind {
         #[cfg(feature = "wayland")]
-        BackendKind::Wayland => wayland::run(bar),
+        BackendKind::Wayland => wayland::run(bars),
         #[cfg(feature = "x11")]
-        BackendKind::X11 => x11::run(bar),
+        BackendKind::X11 => x11::run(bars),
         #[allow(unreachable_patterns)]
         _ => panic!("Backend {:?} not compiled in (enable the feature)", kind),
     }

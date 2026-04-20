@@ -79,6 +79,25 @@ impl Renderer for CairoRenderer {
         w as f64
     }
 
+    fn measure_text_height(&self, text: &str, style: &TextStyle) -> f64 {
+        let tmp_cr;
+        let cr = match self.cr.as_ref() {
+            Some(cr) => cr,
+            None => {
+                let tmp_surface = ImageSurface::create(Format::ARgb32, 1, 1).expect("tmp surface");
+                tmp_cr = Context::new(&tmp_surface).expect("tmp context");
+                &tmp_cr
+            }
+        };
+        let layout = pangocairo::create_layout(cr);
+        let mut font_desc = FontDescription::from_string(&style.font_family);
+        font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
+        layout.set_font_description(Some(&font_desc));
+        layout.set_text(text);
+        let (_, h) = layout.pixel_size();
+        h as f64
+    }
+
     fn end(&mut self) {
         self.cr = None;
         self.surface.flush();
