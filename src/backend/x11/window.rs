@@ -9,6 +9,8 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 use crate::core::bar::Bar;
+use crate::core::module::ModuleId;
+use crate::core::popup::{POPUP_GAP, PopupLayout, PopupMenu, draw_popup, layout_popup};
 use crate::renderer::cairo_renderer::CairoRenderer;
 use crate::renderer::primitives::{Point, Rect, Renderer};
 
@@ -50,6 +52,16 @@ impl Atoms {
             .expect("intern_atom reply failed")
             .atom
     }
+}
+
+struct PopupWindow {
+    win: Window,
+    gc: Gcontext,
+    owner: ModuleId,
+    menu: PopupMenu,
+    layout: PopupLayout,
+    renderer: CairoRenderer,
+    hovered_item: Option<usize>,
 }
 
 pub fn run_x11(bar: &mut Bar) {
@@ -128,9 +140,35 @@ pub fn run_x11(bar: &mut Bar) {
     //   left_start_y, left_end_y, right_start_y, right_end_y,
     //   top_start_x, top_end_x, bottom_start_x, bottom_end_x
     let strut_partial = if bar.bottom {
-        [0u32, 0, 0, height, 0, 0, 0, 0, 0, 0, 0, width.saturating_sub(1)]
+        [
+            0u32,
+            0,
+            0,
+            height,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            width.saturating_sub(1),
+        ]
     } else {
-        [0u32, 0, height, 0, 0, 0, 0, 0, 0, width.saturating_sub(1), 0, 0]
+        [
+            0u32,
+            0,
+            height,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            width.saturating_sub(1),
+            0,
+            0,
+        ]
     };
     conn.change_property32(
         PropMode::REPLACE,
@@ -149,6 +187,7 @@ pub fn run_x11(bar: &mut Bar) {
     conn.create_gc(gc, win, &CreateGCAux::new()).unwrap();
 
     let mut renderer = CairoRenderer::new(width, height);
+    let mut popup: Option<PopupWindow> = None;
     let update_interval = Duration::from_secs(1);
     let idle_sleep = Duration::from_millis(16);
     let mut next_update = Instant::now();
@@ -168,11 +207,39 @@ pub fn run_x11(bar: &mut Bar) {
                         3 => MouseButton::Right,
                         n => MouseButton::Other(n as u32),
                     };
+
+                    if let Some(active_popup) = popup.as_ref() {
+                        if ev.event == active_popup.win {
+                            // The pointer is grabbed on the popup window, so
+                            // every click outside of it is reported here too
+                            // (with negative or out-of-range coordinates).
+                            // hit_test() rejects those, dismissing the menu.
+                            if let Some(item_idx) = active_popup.layout.hit_test(
+                                &active_popup.menu.items,
+                                ev.event_x as f64,
+                                ev.event_y as f64,
+                            ) {
+                                bar.handle_popup_click(&active_popup.owner, item_idx, button);
+                            } else {
+                                bar.dismiss_all_popups();
+                            }
+                            bar.update_all();
+                            needs_redraw = true;
+                            continue;
+                        }
+                    }
+
+                    if popup.is_some() {
+                        bar.dismiss_all_popups();
+                    }
+
                     let click = ClickEvent {
                         x: ev.event_x as f64,
+                        bar_x: ev.event_x as f64,
                         screen_x: ev.root_x as f64,
                         module_width: 0.0,
                         y: ev.event_y as f64,
+                        bar_y: ev.event_y as f64,
                         screen_y: ev.root_y as f64,
                         button,
                     };
@@ -180,7 +247,9 @@ pub fn run_x11(bar: &mut Bar) {
                     let measure = |id: &String| -> f64 {
                         if let Some(view) = bar.module_view(id) {
                             if !view.icons.is_empty() {
-                                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
+                                let icon_size =
+                                    view.icon_size.unwrap_or_else(|| height.saturating_sub(4))
+                                        as f64;
                                 let n = view.icons.len() as f64;
                                 view.padding.0
                                     + view.padding.1
@@ -199,6 +268,28 @@ pub fn run_x11(bar: &mut Bar) {
                     needs_redraw = true;
                 }
                 _ => {}
+            }
+        }
+
+        // Drain any MotionNotify events for the popup (they can queue up fast
+        // so only act on the last one between frames).
+        let mut last_motion: Option<(i16, i16, Window)> = None;
+        while let Some(event) = conn.poll_for_event().expect("X11 event error") {
+            if let Event::MotionNotify(ev) = event {
+                last_motion = Some((ev.event_x, ev.event_y, ev.event));
+            }
+        }
+        if let Some((mx, my, event_win)) = last_motion {
+            if let Some(p) = popup.as_mut() {
+                if event_win == p.win {
+                    let new_hover =
+                        p.layout.hit_test(&p.menu.items, mx as f64, my as f64);
+                    if new_hover != p.hovered_item {
+                        p.hovered_item = new_hover;
+                        render_popup_window(&conn, p, &bar.text_style, screen.root_depth);
+                        conn.flush().unwrap();
+                    }
+                }
             }
         }
 
@@ -227,6 +318,15 @@ pub fn run_x11(bar: &mut Bar) {
                 data,
             )
             .unwrap();
+            sync_popup_window(
+                &conn,
+                screen,
+                bar,
+                &renderer,
+                &mut popup,
+                y_pos,
+                screen.root_depth,
+            );
             conn.flush().unwrap();
             needs_redraw = false;
         }
@@ -238,6 +338,149 @@ pub fn run_x11(bar: &mut Bar) {
             thread::sleep(sleep_for);
         }
     }
+}
+
+fn sync_popup_window(
+    conn: &RustConnection,
+    screen: &Screen,
+    bar: &Bar,
+    text_renderer: &CairoRenderer,
+    popup_state: &mut Option<PopupWindow>,
+    bar_y: i16,
+    depth: u8,
+) {
+    let active_popup = bar.active_popup();
+
+    match active_popup {
+        Some((owner, menu)) => {
+            let Some(layout) =
+                layout_popup(&menu, bar.width as f64, &bar.text_style, text_renderer)
+            else {
+                if let Some(popup) = popup_state.take() {
+                    destroy_popup_window(conn, popup);
+                }
+                return;
+            };
+
+            let popup_width = layout.pixel_width();
+            let popup_height = layout.pixel_height();
+            let popup_x = layout.x.round() as i32;
+            let popup_y = if bar.bottom {
+                i32::from(bar_y) - popup_height as i32 - POPUP_GAP.round() as i32
+            } else {
+                i32::from(bar_y) + bar.height as i32 + POPUP_GAP.round() as i32
+            };
+
+            if popup_state.is_none() {
+                let win = conn.generate_id().unwrap();
+                conn.create_window(
+                    COPY_DEPTH_FROM_PARENT,
+                    win,
+                    screen.root,
+                    popup_x as i16,
+                    popup_y as i16,
+                    popup_width as u16,
+                    popup_height as u16,
+                    0,
+                    WindowClass::INPUT_OUTPUT,
+                    0,
+                    &CreateWindowAux::new()
+                        .event_mask(
+                            EventMask::EXPOSURE
+                                | EventMask::BUTTON_PRESS
+                                | EventMask::POINTER_MOTION,
+                        )
+                        .override_redirect(1)
+                        .background_pixel(screen.black_pixel),
+                )
+                .unwrap();
+
+                let gc = conn.generate_id().unwrap();
+                conn.create_gc(gc, win, &CreateGCAux::new()).unwrap();
+                conn.map_window(win).unwrap();
+
+                // Actively grab the pointer so we receive every button press,
+                // even those outside the popup window. Out-of-range clicks
+                // are routed to `win` with coordinates outside the popup
+                // bounds, which the click handler treats as a dismiss.
+                let _ = conn.grab_pointer(
+                    false,
+                    win,
+                    EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                    x11rb::NONE,
+                    x11rb::NONE,
+                    x11rb::CURRENT_TIME,
+                );
+
+                *popup_state = Some(PopupWindow {
+                    win,
+                    gc,
+                    owner: owner.clone(),
+                    menu: menu.clone(),
+                    layout: layout.clone(),
+                    renderer: CairoRenderer::new(popup_width, popup_height),
+                    hovered_item: None,
+                });
+            }
+
+            let popup = popup_state.as_mut().unwrap();
+            popup.owner = owner;
+            popup.menu = menu;
+            popup.layout = layout;
+            conn.configure_window(
+                popup.win,
+                &ConfigureWindowAux::new()
+                    .x(popup_x)
+                    .y(popup_y)
+                    .width(popup_width)
+                    .height(popup_height)
+                    .stack_mode(StackMode::ABOVE),
+            )
+            .unwrap();
+            render_popup_window(conn, popup, &bar.text_style, depth);
+            conn.map_window(popup.win).ok();
+        }
+        None => {
+            if let Some(popup) = popup_state.take() {
+                destroy_popup_window(conn, popup);
+            }
+        }
+    }
+}
+
+fn destroy_popup_window(conn: &RustConnection, popup: PopupWindow) {
+    let _ = conn.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = conn.free_gc(popup.gc);
+    let _ = conn.destroy_window(popup.win);
+}
+
+fn render_popup_window(
+    conn: &RustConnection,
+    popup: &mut PopupWindow,
+    text_style: &crate::renderer::primitives::TextStyle,
+    depth: u8,
+) {
+    let width = popup.layout.pixel_width();
+    let height = popup.layout.pixel_height();
+    popup.renderer.begin(width, height);
+    draw_popup(&mut popup.renderer, &popup.menu, &popup.layout, text_style, popup.hovered_item);
+    popup.renderer.end();
+
+    conn.put_image(
+        ImageFormat::Z_PIXMAP,
+        popup.win,
+        popup.gc,
+        width as u16,
+        height as u16,
+        0,
+        0,
+        0,
+        depth,
+        popup.renderer.data(),
+    )
+    .unwrap();
 }
 
 fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) {

@@ -1,120 +1,124 @@
-# beebar config
+# beebar config — single elegant top bar (Catppuccin Mocha)
 
-[bar.main]
-height = 30
-background = "#1e1e2e"
+[bar.top]
+height = 36
+background = "#11111b"
 foreground = "#cdd6f4"
 font = "JetBrainsMono Nerd Font"
-font_size = 14.0
-padding_left = 8.0
-padding_right = 8.0
+font_size = 13.5
+padding_left = 12.0
+padding_right = 12.0
 text_y_offset = 0.0
+position = "top"
 
-modules_left = ["clock", "playback", "memory", "temperature"]
-modules_center = ["workspaces"]
-modules_right = ["network", "brightness", "volume", "cpu", "battery", "tray"]
+modules_left   = ["workspaces"]
+modules_center = ["clock"]
+modules_right  = ["playback", "network", "temperature", "cpu", "memory", "brightness", "volume", "battery", "tray"]
 
-[bar.bottom]
-height = 24
-background = "#1e1e2e"
-foreground = "#cdd6f4"
-font = "JetBrainsMono Nerd Font"
-font_size = 12.0
-padding_left = 8.0
-padding_right = 8.0
-text_y_offset = 0.0
-position = "bottom"
-
-modules_left = ["playback"]
-modules_center = []
-modules_right = ["battery"]
-
-[module.clock]
-type = "clock"
-format = " %a %b %d  %H:%M:%S"
-
-[module.playback]
-type = "playback"
-format = "{icon} {track} {buttons}"
-# icon = ""
-# icon_unavailable = "󰎈"
+# ── Workspaces ────────────────────────────────────────────────────────────────
 
 [module.workspaces]
 type = "workspaces"
-count = 10
-# labels = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
-active_color = "#f4d38a"
-occupied_color = "#91d7fa"
-empty_color = "#9097ab"
+count = 9
+labels = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
+active_color   = "#cba6f7"
+occupied_color = "#89b4fa"
+empty_color    = "#45475a"
 
-[module.cpu]
-type = "cpu"
-icon = ""
+# ── Clock ─────────────────────────────────────────────────────────────────────
 
-[module.memory]
-type = "memory"
-format = "{icon} {used}/{total}"
-# icon = "󰍛"
+[module.clock]
+type = "clock"
+format = "  %A, %B %d   %H:%M"
 
-[module.volume]
-type = "volume"
-slider_width = 20
-icon_gap = 1
-filled_color = "#f4d38a"
-empty_color = "#8a91a3"
-muted_color = "#ec6b6b"
-unavailable_color = "#d06c6c"
-icon_muted = "󰝟"
-icon_unknown = ""
-icon_low = "󰕿"
-icon_medium = "󰖀"
-icon_high = "󰕾"
-icon_unavailable = ""
-glyph_left = "▐"
-glyph_filled = "█"
-glyph_empty = "░"
-glyph_right = "▌"
+# ── Playback ──────────────────────────────────────────────────────────────────
+
+[module.playback]
+type = "playback"
+format = "{icon} {track}  {buttons}"
+
+# ── Network ───────────────────────────────────────────────────────────────────
 
 [module.network]
 type = "network"
-format = "↓ {download} ↑ {upload}"
-# interface = "wlp0s20f3"
+format = "󰇚 {download}  󰕒 {upload}"
 
-[module.brightness]
-type = "brightness"
-slider_width = 20
-icon_gap = 1
-filled_color = "#f4d38a"
-empty_color = "#8a91a3"
-unavailable_color = "#d06c6c"
-icon_low = "󰃚"
-icon_medium = "󰃝"
-icon_high = "󰃠"
-icon_unknown = ""
-icon_unavailable = ""
-glyph_left = "▐"
-glyph_filled = "█"
-glyph_empty = "░"
-glyph_right = "▌"
-
-[module.battery]
-type = "battery"
-icon_low = "󰁻"
-icon_medium = "󰁾"
-icon_high = "󰂁"
-icon_full = "󰁹"
-
-[module.tray]
-type = "tray"
-icon_size = 18
-padding_left = 4.0
-padding_right = 4.0
-icon_spacing = 4.0
+# ── Temperature ───────────────────────────────────────────────────────────────
 
 [module.temperature]
 type = "temperature"
-icon = ""
-warn_threshold = 80.0
-critical_threshold = 95.0
-warn_color = "#f4d38a"
-critical_color = "#ec6b6b"
+icon = ""
+warn_threshold     = 75.0
+critical_threshold = 90.0
+warn_color     = "#f9e2af"
+critical_color = "#f38ba8"
+
+# ── CPU ───────────────────────────────────────────────────────────────────────
+
+[module.cpu]
+type = "cpu"
+icon = ""
+
+# ── Memory ────────────────────────────────────────────────────────────────────
+
+[module.memory]
+type = "memory"
+format = "󰍛 {used}/{total}"
+
+# ── Brightness ────────────────────────────────────────────────────────────────
+
+[module.brightness]
+type = "brightness"
+slider_width = 14
+icon_gap     = 1
+filled_color      = "#f9e2af"
+empty_color       = "#45475a"
+unavailable_color = "#6c7086"
+icon_low         = "󰃚"
+icon_medium      = "󰃝"
+icon_high        = "󰃠"
+icon_unknown     = ""
+icon_unavailable = "󰃞"
+glyph_left   = ""
+glyph_filled = "█"
+glyph_empty  = "░"
+glyph_right  = ""
+
+# ── Volume ────────────────────────────────────────────────────────────────────
+
+[module.volume]
+type = "volume"
+slider_width = 14
+icon_gap     = 1
+filled_color      = "#a6e3a1"
+empty_color       = "#45475a"
+muted_color       = "#f38ba8"
+unavailable_color = "#6c7086"
+icon_muted       = "󰝟"
+icon_unknown     = ""
+icon_low         = "󰕿"
+icon_medium      = "󰖀"
+icon_high        = "󰕾"
+icon_unavailable = "󰖁"
+glyph_left   = ""
+glyph_filled = "█"
+glyph_empty  = "░"
+glyph_right  = ""
+
+# ── Battery ───────────────────────────────────────────────────────────────────
+
+[module.battery]
+type = "battery"
+icon_low    = "󰁻"
+icon_medium = "󰁾"
+icon_high   = "󰂁"
+icon_full   = "󰁹"
+
+# ── System Tray ───────────────────────────────────────────────────────────────
+
+[module.tray]
+type = "tray"
+icon_size     = 16
+padding_left  = 6.0
+padding_right = 6.0
+icon_spacing  = 6.0

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::event::ClickEvent;
 use super::layout::{BarLayout, ModuleRegion};
 use super::module::{Module, ModuleId, ModuleView};
+use super::popup::PopupMenu;
 use crate::renderer::color::Color;
 use crate::renderer::primitives::TextStyle;
 
@@ -98,9 +99,11 @@ impl Bar {
                     // module can determine which internal slot was clicked.
                     let rel = ClickEvent {
                         x: event.x - region.x,
+                        bar_x: event.bar_x,
                         screen_x: event.screen_x,
                         module_width: region.width,
                         y: event.y,
+                        bar_y: event.bar_y,
                         screen_y: event.screen_y,
                         button: event.button,
                     };
@@ -108,6 +111,42 @@ impl Bar {
                 }
                 break;
             }
+        }
+    }
+
+    pub fn active_popup(&self) -> Option<(ModuleId, PopupMenu)> {
+        for id in self
+            .layout
+            .left
+            .iter()
+            .chain(self.layout.center.iter())
+            .chain(self.layout.right.iter())
+        {
+            let Some(module) = self.modules.get(id) else {
+                continue;
+            };
+            if let Some(popup) = module.popup() {
+                return Some((id.clone(), popup));
+            }
+        }
+
+        None
+    }
+
+    pub fn handle_popup_click(
+        &mut self,
+        id: &ModuleId,
+        item_index: usize,
+        button: crate::core::event::MouseButton,
+    ) {
+        if let Some(module) = self.modules.get_mut(id) {
+            module.popup_click(item_index, button);
+        }
+    }
+
+    pub fn dismiss_all_popups(&mut self) {
+        for module in self.modules.values_mut() {
+            module.dismiss_popup();
         }
     }
 }

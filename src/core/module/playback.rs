@@ -696,9 +696,11 @@ mod tests {
     fn click_event(module: &PlaybackModule, x: f64) -> ClickEvent {
         ClickEvent {
             x,
+            bar_x: x,
             screen_x: x,
             module_width: module_width(module),
             y: 0.0,
+            bar_y: 0.0,
             screen_y: 0.0,
             button: MouseButton::Left,
         }

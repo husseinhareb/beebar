@@ -13,6 +13,7 @@ pub mod workspaces;
 
 use crate::core::config::{ModuleConfig, resolve_length, resolve_optional_color};
 use crate::core::event::ClickEvent;
+use crate::core::popup::PopupMenu;
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Renderer, TextStyle};
 
@@ -86,7 +87,10 @@ impl ModuleView {
             self.text_segments
                 .iter()
                 .map(|segment| renderer.measure_text_height(&segment.text, &segment.style))
-                .fold(renderer.measure_text_height(&self.text, &self.style), f64::max)
+                .fold(
+                    renderer.measure_text_height(&self.text, &self.style),
+                    f64::max,
+                )
         }
     }
 }
@@ -217,4 +221,15 @@ pub trait Module: Send {
 
     /// Handle a click event on this module's area. Default: no-op.
     fn click(&mut self, _event: ClickEvent) {}
+
+    /// Return an active popup menu anchored to the bar, if any.
+    fn popup(&self) -> Option<PopupMenu> {
+        None
+    }
+
+    /// Handle a click on one popup entry.
+    fn popup_click(&mut self, _item_index: usize, _button: crate::core::event::MouseButton) {}
+
+    /// Dismiss the module popup, if any.
+    fn dismiss_popup(&mut self) {}
 }

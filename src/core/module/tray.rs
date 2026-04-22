@@ -31,9 +31,9 @@ use zbus::{
     zvariant::{OwnedObjectPath, OwnedValue},
 };
 
-use super::{IconData, Module, ModuleChrome, ModuleView, TextSegment, char_len};
+use super::{IconData, Module, ModuleChrome, ModuleView};
 use crate::core::event::{ClickEvent, MouseButton};
-use crate::renderer::color::Color;
+use crate::core::popup::{PopupItemKind, PopupMenu, PopupMenuItem};
 use crate::renderer::primitives::TextStyle;
 
 // ─── DBus proxy for a StatusNotifierItem ────────────────────────────────────
@@ -295,22 +295,29 @@ fn load_image_file(path: &std::path::Path, size: u32) -> Option<IconData> {
 // ─── Icon fetching ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
+enum InlineMenuItemKind {
+    Action,
+    Separator,
+    Checkbox(bool),
+    Submenu(Vec<InlineTrayMenuItem>),
+}
+
+#[derive(Debug, Clone)]
 struct InlineTrayMenuItem {
     id: i32,
     label: String,
     enabled: bool,
+    kind: InlineMenuItemKind,
 }
 
 #[derive(Debug, Clone)]
 struct InlineTrayMenu {
     service: String,
+    anchor_x: f64,
     items: Vec<InlineTrayMenuItem>,
-}
-
-#[derive(Debug, Clone)]
-struct InlineMenuToken {
-    text: String,
-    item_idx: Option<usize>,
+    /// Stack of (parent_label, parent_items) capturing the navigation path.
+    /// Empty when at the root menu.
+    breadcrumbs: Vec<(String, Vec<InlineTrayMenuItem>)>,
 }
 
 /// Parse an SNI service string into (bus_name, object_path).
@@ -452,48 +459,72 @@ fn clean_menu_label(label: String) -> String {
 }
 
 fn parse_inline_menu_item(value: OwnedValue) -> Option<InlineTrayMenuItem> {
-    let (id, props, _children): DbusMenuLayout = value.try_into().ok()?;
+    let (id, props, children): DbusMenuLayout = value.try_into().ok()?;
     if !menu_prop_bool(&props, "visible").unwrap_or(true) {
         return None;
     }
 
-    if matches!(
-        menu_prop_string(&props, "type").as_deref(),
-        Some("separator")
-    ) {
-        return None;
+    let item_type = menu_prop_string(&props, "type");
+    if matches!(item_type.as_deref(), Some("separator")) {
+        return Some(InlineTrayMenuItem {
+            id,
+            label: String::new(),
+            enabled: false,
+            kind: InlineMenuItemKind::Separator,
+        });
     }
 
-    let label = clean_menu_label(menu_prop_string(&props, "label")?);
+    let label = clean_menu_label(menu_prop_string(&props, "label").unwrap_or_default());
     if label.is_empty() {
         return None;
+    }
+    let enabled = menu_prop_bool(&props, "enabled").unwrap_or(true);
+
+    // Toggle types: "checkmark" or "radio". Use toggle-state (0/1, -1=unset).
+    let toggle_type = menu_prop_string(&props, "toggle-type");
+    let toggle_state = props
+        .get("toggle-state")
+        .and_then(|value| i32::try_from(value).ok());
+    if matches!(toggle_type.as_deref(), Some("checkmark") | Some("radio")) {
+        return Some(InlineTrayMenuItem {
+            id,
+            label,
+            enabled,
+            kind: InlineMenuItemKind::Checkbox(toggle_state.unwrap_or(0) > 0),
+        });
+    }
+
+    // Submenu: either explicit children-display=submenu, or just non-empty children.
+    let children_display = menu_prop_string(&props, "children-display");
+    let has_children = !children.is_empty();
+    if matches!(children_display.as_deref(), Some("submenu")) || has_children {
+        let sub_items = children
+            .into_iter()
+            .filter_map(parse_inline_menu_item)
+            .collect::<Vec<_>>();
+        if !sub_items.is_empty() {
+            return Some(InlineTrayMenuItem {
+                id,
+                label,
+                enabled,
+                kind: InlineMenuItemKind::Submenu(sub_items),
+            });
+        }
     }
 
     Some(InlineTrayMenuItem {
         id,
         label,
-        enabled: menu_prop_bool(&props, "enabled").unwrap_or(true),
+        enabled,
+        kind: InlineMenuItemKind::Action,
     })
 }
 
-fn inline_menu_tokens(menu: &InlineTrayMenu) -> Vec<InlineMenuToken> {
-    let mut tokens = Vec::new();
-    for (idx, item) in menu.items.iter().enumerate() {
-        if idx > 0 {
-            tokens.push(InlineMenuToken {
-                text: " | ".to_string(),
-                item_idx: None,
-            });
-        }
-        tokens.push(InlineMenuToken {
-            text: item.label.clone(),
-            item_idx: Some(idx),
-        });
-    }
-    tokens
-}
-
-async fn fetch_inline_menu(conn: &Connection, service: &str) -> Option<InlineTrayMenu> {
+async fn fetch_inline_menu(
+    conn: &Connection,
+    service: &str,
+    anchor_x: f64,
+) -> Option<InlineTrayMenu> {
     let (bus_name, object_path) = parse_sni_service(service);
     let proxy = StatusNotifierItemProxy::builder(conn)
         .destination(bus_name.clone())
@@ -515,8 +546,22 @@ async fn fetch_inline_menu(conn: &Connection, service: &str) -> Option<InlineTra
         .ok()?;
 
     let _ = menu_proxy.about_to_show(0).await;
+    // Recursion depth -1 = the entire menu tree, so submenus are populated up
+    // front and we can navigate without extra round-trips.
     let (_, layout) = menu_proxy
-        .get_layout(0, 1, vec!["label", "enabled", "visible", "type"])
+        .get_layout(
+            0,
+            -1,
+            vec![
+                "label",
+                "enabled",
+                "visible",
+                "type",
+                "toggle-type",
+                "toggle-state",
+                "children-display",
+            ],
+        )
         .await
         .ok()?;
 
@@ -531,7 +576,9 @@ async fn fetch_inline_menu(conn: &Connection, service: &str) -> Option<InlineTra
 
     Some(InlineTrayMenu {
         service: service.to_string(),
+        anchor_x,
         items,
+        breadcrumbs: Vec::new(),
     })
 }
 
@@ -977,62 +1024,6 @@ impl Module for TrayModule {
     }
 
     fn click(&mut self, event: ClickEvent) {
-        if let Some(menu) = self.inline_menu.lock().unwrap().clone() {
-            let tokens = inline_menu_tokens(&menu);
-            let content_width =
-                (event.module_width - self.chrome.padding.0 - self.chrome.padding.1).max(0.0);
-            let rel_x = event.x - self.chrome.padding.0;
-
-            if event.button == MouseButton::Right {
-                self.inline_menu.lock().unwrap().take();
-                return;
-            }
-
-            if content_width <= 0.0 || !(0.0..content_width).contains(&rel_x) {
-                self.inline_menu.lock().unwrap().take();
-                return;
-            }
-
-            let total_chars = tokens
-                .iter()
-                .map(|token| char_len(&token.text))
-                .sum::<usize>() as f64;
-            if total_chars <= 0.0 {
-                self.inline_menu.lock().unwrap().take();
-                return;
-            }
-
-            let char_width = content_width / total_chars;
-            let mut cursor = 0.0;
-            let mut selected_item = None;
-            for token in tokens {
-                let token_width = char_len(&token.text) as f64 * char_width;
-                if rel_x < cursor + token_width {
-                    selected_item = token.item_idx;
-                    break;
-                }
-                cursor += token_width;
-            }
-
-            let menu_item = selected_item.and_then(|idx| menu.items.get(idx).cloned());
-            self.inline_menu.lock().unwrap().take();
-
-            if event.button == MouseButton::Left {
-                if let Some(item) = menu_item.filter(|item| item.enabled) {
-                    let conn = match self.conn.lock().unwrap().clone() {
-                        Some(c) => c,
-                        None => return,
-                    };
-                    let service = menu.service.clone();
-                    self.rt.spawn(async move {
-                        trigger_inline_menu_item(&conn, &service, item.id).await;
-                    });
-                }
-            }
-
-            return;
-        }
-
         // Determine which icon slot was hit.
         // `event.x` is relative to the module's left edge (after padding).
         let padding_left = self.chrome.padding.0;
@@ -1082,7 +1073,8 @@ impl Module for TrayModule {
             }
             MouseButton::Right => {
                 let inline_menu = self.inline_menu.clone();
-                self.rt.spawn(async move {
+                let anchor_x = event.bar_x;
+                let menu = self.rt.block_on(async move {
                     let (bus, path) = parse_sni_service(&service);
                     let proxy = StatusNotifierItemProxy::builder(&conn)
                         .destination(bus)
@@ -1093,14 +1085,15 @@ impl Module for TrayModule {
                             Ok(p) => {
                                 if let Err(error) = p.context_menu(x, y).await {
                                     log::debug!("[tray] context_menu unavailable, falling back to dbusmenu: {error}");
-                                    let menu = fetch_inline_menu(&conn, &service).await;
-                                    *inline_menu.lock().unwrap() = menu;
+                                    return fetch_inline_menu(&conn, &service, anchor_x).await;
                                 }
                             }
                             Err(e) => log::debug!("[tray] proxy build: {e}"),
                         }
                     }
+                    None
                 });
+                *inline_menu.lock().unwrap() = menu;
             }
             MouseButton::Middle => {
                 self.rt.spawn(async move {
@@ -1124,40 +1117,6 @@ impl Module for TrayModule {
     }
 
     fn view(&self) -> ModuleView {
-        if let Some(menu) = self.inline_menu.lock().unwrap().clone() {
-            let base_style = TextStyle::default();
-            let disabled_style = TextStyle {
-                color: Color::rgb(0.55, 0.55, 0.55),
-                ..TextStyle::default()
-            };
-            let text_segments = inline_menu_tokens(&menu)
-                .into_iter()
-                .map(|token| {
-                    let style = match token.item_idx.and_then(|idx| menu.items.get(idx)) {
-                        Some(item) if !item.enabled => disabled_style.clone(),
-                        _ => base_style.clone(),
-                    };
-                    TextSegment {
-                        text: token.text,
-                        style,
-                    }
-                })
-                .collect::<Vec<_>>();
-            let text = text_segments
-                .iter()
-                .map(|segment| segment.text.as_str())
-                .collect::<String>();
-
-            return self.chrome.apply(ModuleView {
-                text,
-                text_segments,
-                style: base_style,
-                background: None,
-                icons: Vec::new(),
-                ..Default::default()
-            });
-        }
-
         let icons = self.current_icons.lock().unwrap().clone();
         self.chrome.apply(ModuleView {
             text: String::new(),
@@ -1168,5 +1127,108 @@ impl Module for TrayModule {
             icon_size: Some(self.icon_size),
             ..Default::default()
         })
+    }
+
+    fn popup(&self) -> Option<PopupMenu> {
+        let menu = self.inline_menu.lock().unwrap().clone()?;
+        let mut items: Vec<PopupMenuItem> = Vec::new();
+
+        // When inside a submenu, prepend a "← parent" back-navigation row.
+        if let Some((parent_label, _)) = menu.breadcrumbs.last() {
+            items.push(PopupMenuItem {
+                label: format!("\u{2039} {}", parent_label),
+                enabled: true,
+                kind: PopupItemKind::Action,
+            });
+            // Separator between back row and submenu contents.
+            items.push(PopupMenuItem {
+                label: String::new(),
+                enabled: false,
+                kind: PopupItemKind::Separator,
+            });
+        }
+
+        items.extend(menu.items.iter().map(|item| PopupMenuItem {
+            label: item.label.clone(),
+            enabled: item.enabled,
+            kind: match &item.kind {
+                InlineMenuItemKind::Action => PopupItemKind::Action,
+                InlineMenuItemKind::Separator => PopupItemKind::Separator,
+                InlineMenuItemKind::Checkbox(checked) => PopupItemKind::Checkbox(*checked),
+                InlineMenuItemKind::Submenu(_) => PopupItemKind::Submenu,
+            },
+        }));
+
+        Some(PopupMenu {
+            anchor_x: menu.anchor_x,
+            items,
+        })
+    }
+
+    fn popup_click(&mut self, item_index: usize, button: MouseButton) {
+        if button != MouseButton::Left {
+            return;
+        }
+
+        // Borrow the menu mutably so we can either replace it (drill-in) or
+        // take it (action/checkbox triggers a real DBus event and dismisses).
+        let mut menu_guard = self.inline_menu.lock().unwrap();
+        let Some(menu) = menu_guard.as_mut() else {
+            return;
+        };
+
+        // When breadcrumbs exist the popup prepends a back-nav row (index 0)
+        // and a separator (index 1) before the real items.
+        let has_back = !menu.breadcrumbs.is_empty();
+        let header_rows: usize = if has_back { 2 } else { 0 };
+
+        // Back-nav row clicked → pop the breadcrumb stack.
+        if has_back && item_index == 0 {
+            if let Some((_, parent_items)) = menu.breadcrumbs.pop() {
+                menu.items = parent_items;
+            }
+            return;
+        }
+
+        // Separator row (index 1) is not actionable.
+        if has_back && item_index == 1 {
+            return;
+        }
+
+        let real_index = item_index - header_rows;
+        let Some(item) = menu.items.get(real_index).cloned() else {
+            return;
+        };
+        if !item.enabled || matches!(item.kind, InlineMenuItemKind::Separator) {
+            return;
+        }
+
+        match item.kind {
+            InlineMenuItemKind::Submenu(children) => {
+                // Drill in: push current items onto the breadcrumb stack and
+                // swap to the children. Keep the popup open.
+                let parent_items = std::mem::take(&mut menu.items);
+                menu.breadcrumbs.push((item.label.clone(), parent_items));
+                menu.items = children;
+            }
+            InlineMenuItemKind::Action | InlineMenuItemKind::Checkbox(_) => {
+                let service = menu.service.clone();
+                let item_id = item.id;
+                drop(menu_guard);
+                self.inline_menu.lock().unwrap().take();
+                let conn = match self.conn.lock().unwrap().clone() {
+                    Some(c) => c,
+                    None => return,
+                };
+                self.rt.spawn(async move {
+                    trigger_inline_menu_item(&conn, &service, item_id).await;
+                });
+            }
+            InlineMenuItemKind::Separator => {}
+        }
+    }
+
+    fn dismiss_popup(&mut self) {
+        self.inline_menu.lock().unwrap().take();
     }
 }
