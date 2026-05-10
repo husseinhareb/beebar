@@ -1,49 +1,106 @@
-# beebar config — single elegant top bar (Catppuccin Mocha)
+# beebar config — pill-grouped top bar (Catppuccin Mocha, waybar-style)
 
 [bar.top]
-height = 36
-background = "#11111b"
+height = 50
+background = "#00000000"        # fully transparent bar surface; only pills show
 foreground = "#cdd6f4"
 font = "JetBrainsMono Nerd Font"
 font_size = 13.5
-padding_left = 12.0
-padding_right = 12.0
-text_y_offset = 0.0
+padding_left = 8.0
+padding_right = 8.0
 position = "top"
 
-modules_left   = ["workspaces"]
-modules_center = ["clock"]
-modules_right  = ["playback", "network", "temperature", "cpu", "memory", "brightness", "volume", "battery", "tray"]
+# ── Pill styling ──────────────────────────────────────────────────────────────
+# Vertical inset of pills from the bar edges, horizontal gap between pills,
+# and the shared rounded background color (~80% opacity dark, like waybar).
+margin_top      = 10.0
+margin_bottom   = 6.0
+margin_left     = 10.0
+margin_right    = 10.0
+group_spacing   = 10.0
+corner_radius   = 6.0
+module_background = "#1e1e2ecc"
+
+# ── Pill groups (each inner array = one continuous pill) ──────────────────────
+# Clock and workspaces are now in separate pills, matching the waybar
+# screenshot. Add or rearrange entries to redesign the bar.
+groups_left = [
+    ["clock"],
+    ["workspaces"],
+]
+groups_center = [
+    ["window"],
+]
+groups_right = [
+    ["network", "bluetooth"],
+    ["temperature", "battery"],
+    ["tray"],
+]
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
+# `empty_color` is brightened from #45475a → #585b70 so inactive workspaces are
+# visible against the dark pill background.
 
 [module.workspaces]
 type = "workspaces"
-count = 9
-labels = ["一", "二", "三", "四", "五", "六", "七", "八", "九"]
+count = 10
+labels = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 active_color   = "#cba6f7"
-occupied_color = "#89b4fa"
-empty_color    = "#45475a"
+occupied_color = "#a6adc8"
+empty_color    = "#585b70"
 
-# ── Clock ─────────────────────────────────────────────────────────────────────
+# ── Clock (mint-green, matches waybar #clock) ─────────────────────────────────
 
 [module.clock]
 type = "clock"
-format = "  %A, %B %d   %H:%M"
+format = "  %I:%M %p   %a, %b %e"
+foreground = "#00d483"
 
-# ── Playback ──────────────────────────────────────────────────────────────────
+# ── Window (centre pill, shows the active window title) ──────────────────────
+# `backend` selects where the title comes from:
+#   - "beewm"     — read /tmp/beewm_window (beewm writes the focused title here)
+#   - "hyprland"  — `hyprctl activewindow -j`
+#   - "auto"      — prefer /tmp/beewm_window when present, fall back to hyprctl
+
+[module.window]
+type = "window"
+backend = "auto"
+max_length = 80
+empty_label = ""
+foreground = "#cdd6f4"
+
+# ── Playback (kept available; not in the default layout) ──────────────────────
 
 [module.playback]
 type = "playback"
 format = "{icon} {track}  {buttons}"
+foreground = "#cdd6f4"
 
-# ── Network ───────────────────────────────────────────────────────────────────
+# ── Network (blue, like waybar #network) ──────────────────────────────────────
 
 [module.network]
 type = "network"
 format = "󰇚 {download}  󰕒 {upload}"
+foreground = "#0099ff"
 
-# ── Temperature ───────────────────────────────────────────────────────────────
+# ── Bluetooth (blue, like waybar #bluetooth) ──────────────────────────────────
+
+[module.bluetooth]
+type = "bluetooth"
+format = "{icon} {status}"
+icon_on            = "󰂯"
+icon_off           = "󰂲"
+icon_no_controller = "󰂲"
+foreground = "#0062ff"
+
+# ── CPU ───────────────────────────────────────────────────────────────────────
+
+[module.cpu]
+type = "cpu"
+icon = ""
+foreground = "#89dceb"
+
+# ── Temperature (teal, with warn/critical highlights) ─────────────────────────
 
 [module.temperature]
 type = "temperature"
@@ -52,23 +109,23 @@ warn_threshold     = 75.0
 critical_threshold = 90.0
 warn_color     = "#f9e2af"
 critical_color = "#f38ba8"
+foreground = "#94e2d5"
 
-# ── CPU ───────────────────────────────────────────────────────────────────────
-
-[module.cpu]
-type = "cpu"
-icon = ""
-
-# ── Memory ────────────────────────────────────────────────────────────────────
+# ── Memory (kept for users who want it; not in the default pill layout) ───────
 
 [module.memory]
 type = "memory"
 format = "󰍛 {used}/{total}"
 
 # ── Brightness ────────────────────────────────────────────────────────────────
+# `backend = "sysfs"` reads /sys/class/backlight/<device>/ directly so no
+# brightnessctl install is required. Setting writes to that file (may need
+# udev rules for non-root write access).
 
 [module.brightness]
 type = "brightness"
+backend = "sysfs"
+device  = "nvidia_0"
 slider_width = 14
 icon_gap     = 1
 filled_color      = "#f9e2af"
@@ -83,8 +140,9 @@ glyph_left   = ""
 glyph_filled = "█"
 glyph_empty  = "░"
 glyph_right  = ""
+foreground = "#f9e2af"
 
-# ── Volume ────────────────────────────────────────────────────────────────────
+# ── Volume (green, like waybar #pulseaudio) ───────────────────────────────────
 
 [module.volume]
 type = "volume"
@@ -104,8 +162,9 @@ glyph_left   = ""
 glyph_filled = "█"
 glyph_empty  = "░"
 glyph_right  = ""
+foreground = "#679df5"
 
-# ── Battery ───────────────────────────────────────────────────────────────────
+# ── Battery (green, like waybar #battery) ─────────────────────────────────────
 
 [module.battery]
 type = "battery"
@@ -113,12 +172,13 @@ icon_low    = "󰁻"
 icon_medium = "󰁾"
 icon_high   = "󰂁"
 icon_full   = "󰁹"
+foreground = "#3acc2d"
 
 # ── System Tray ───────────────────────────────────────────────────────────────
 
 [module.tray]
 type = "tray"
-icon_size     = 16
-padding_left  = 6.0
-padding_right = 6.0
-icon_spacing  = 6.0
+icon_size     = 18
+padding_left  = 8.0
+padding_right = 8.0
+icon_spacing  = 8.0

@@ -8,11 +8,12 @@ use x11rb::protocol::xproto::*;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
-use crate::core::bar::Bar;
+use crate::core::bar::{Bar, render_bar};
+use crate::core::layout::BarLayout;
 use crate::core::module::ModuleId;
 use crate::core::popup::{POPUP_GAP, PopupLayout, PopupMenu, draw_popup, layout_popup};
 use crate::renderer::cairo_renderer::CairoRenderer;
-use crate::renderer::primitives::{Point, Rect, Renderer};
+use crate::renderer::primitives::Renderer;
 
 /// EWMH atoms needed for dock behavior.
 struct Atoms {
@@ -244,25 +245,8 @@ pub fn run_x11(bar: &mut Bar) {
                         button,
                     };
 
-                    let measure = |id: &String| -> f64 {
-                        if let Some(view) = bar.module_view(id) {
-                            if !view.icons.is_empty() {
-                                let icon_size =
-                                    view.icon_size.unwrap_or_else(|| height.saturating_sub(4))
-                                        as f64;
-                                let n = view.icons.len() as f64;
-                                view.padding.0
-                                    + view.padding.1
-                                    + n * icon_size
-                                    + (n - 1.0).max(0.0) * view.icon_spacing
-                            } else {
-                                view.text_width(&renderer) + view.padding.0 + view.padding.1
-                            }
-                        } else {
-                            0.0
-                        }
-                    };
-                    let regions = bar.layout.compute(width as f64, &measure);
+                    let groups = bar.compute_groups(width as f64, &renderer);
+                    let regions = BarLayout::flatten_modules(&groups);
                     bar.handle_click(&regions, &click);
                     bar.update_all();
                     needs_redraw = true;
@@ -483,80 +467,5 @@ fn render_popup_window(
     .unwrap();
 }
 
-fn render_bar(bar: &Bar, renderer: &mut CairoRenderer, width: u32, height: u32) {
-    renderer.begin(width, height);
-
-    // Background
-    renderer.draw_rect(
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width: width as f64,
-            height: height as f64,
-        },
-        bar.background,
-    );
-
-    let measure = |id: &String| -> f64 {
-        if let Some(view) = bar.module_view(id) {
-            if !view.icons.is_empty() {
-                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
-                let n = view.icons.len() as f64;
-                view.padding.0
-                    + view.padding.1
-                    + n * icon_size
-                    + (n - 1.0).max(0.0) * view.icon_spacing
-            } else {
-                view.text_width(renderer) + view.padding.0 + view.padding.1
-            }
-        } else {
-            0.0
-        }
-    };
-
-    let regions = bar.layout.compute(width as f64, &measure);
-
-    for region in &regions {
-        if let Some(view) = bar.module_view(&region.id) {
-            if let Some(bg) = view.background {
-                renderer.draw_rect(
-                    Rect {
-                        x: region.x,
-                        y: 0.0,
-                        width: region.width,
-                        height: height as f64,
-                    },
-                    bg,
-                );
-            }
-
-            if !view.icons.is_empty() {
-                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4));
-                let mut ix = region.x + view.padding.0;
-                let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
-                for icon_data in &view.icons {
-                    renderer.draw_icon(
-                        Point { x: ix, y: iy },
-                        &icon_data.pixels,
-                        icon_data.width,
-                        icon_data.height,
-                        icon_size,
-                    );
-                    ix += icon_size as f64 + view.icon_spacing;
-                }
-            } else {
-                let y = (height as f64 - view.text_height(renderer)) / 2.0 + bar.text_y_offset;
-                let mut x = region.x + view.padding.0;
-                if view.text_segments.is_empty() {
-                    renderer.draw_text(Point { x, y }, &view.text, &view.style);
-                } else {
-                    for segment in &view.text_segments {
-                        x += renderer.draw_text(Point { x, y }, &segment.text, &segment.style);
-                    }
-                }
-            }
-        }
-    }
-
-    renderer.end();
-}
+// Bar rendering moved to `core::bar::render_bar` (imported above) so it is
+// shared with the Wayland backend.

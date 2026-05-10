@@ -54,6 +54,47 @@ pub struct BarConfig {
 
     #[serde(default)]
     pub modules_right: Vec<String>,
+
+    /// Grouped module layout. Each inner array forms one pill-shaped cluster
+    /// with a shared rounded background. When set, takes precedence over the
+    /// flat `modules_*` field on the same side.
+    #[serde(default)]
+    pub groups_left: Vec<Vec<String>>,
+
+    #[serde(default)]
+    pub groups_center: Vec<Vec<String>>,
+
+    #[serde(default)]
+    pub groups_right: Vec<Vec<String>>,
+
+    /// Vertical inset of pill groups from the top of the bar.
+    #[serde(default)]
+    pub margin_top: f64,
+
+    /// Vertical inset of pill groups from the bottom of the bar.
+    #[serde(default)]
+    pub margin_bottom: f64,
+
+    /// Horizontal inset for the left-most pill from the bar's left edge.
+    #[serde(default)]
+    pub margin_left: f64,
+
+    /// Horizontal inset for the right-most pill from the bar's right edge.
+    #[serde(default)]
+    pub margin_right: f64,
+
+    /// Horizontal gap between adjacent pill groups.
+    #[serde(default)]
+    pub group_spacing: f64,
+
+    /// Corner radius for pill group backgrounds (px).
+    #[serde(default)]
+    pub corner_radius: f64,
+
+    /// Default fill color for all pill groups. Modules' own backgrounds, if
+    /// set, are drawn on top of this within their slot.
+    #[serde(default)]
+    pub module_background: Option<String>,
 }
 
 fn default_position() -> String {
@@ -76,7 +117,7 @@ pub struct Config {
     pub module: std::collections::HashMap<String, ModuleConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct ModuleConfig {
     #[serde(rename = "type")]
     pub kind: String,
@@ -122,6 +163,28 @@ pub struct ModuleConfig {
 
     #[serde(default)]
     pub icon_full: Option<String>,
+
+    /// Maximum number of characters before the module's text is truncated
+    /// with an ellipsis. Currently used by the `window` module.
+    #[serde(default)]
+    pub max_length: Option<u32>,
+
+    /// Optional label shown when a module has nothing to display
+    /// (e.g. the `window` module when there is no focused window).
+    #[serde(default)]
+    pub empty_label: Option<String>,
+
+    /// Icon used by the `bluetooth` module when the adapter is on.
+    #[serde(default)]
+    pub icon_on: Option<String>,
+
+    /// Icon used by the `bluetooth` module when the adapter is off.
+    #[serde(default)]
+    pub icon_off: Option<String>,
+
+    /// Icon used by the `bluetooth` module when no controller is found.
+    #[serde(default)]
+    pub icon_no_controller: Option<String>,
 
     #[serde(default)]
     pub labels: Option<Vec<String>>,
@@ -291,6 +354,38 @@ impl BarConfig {
             ),
         )
     }
+
+    /// Default group background. None if unset or unparseable.
+    pub fn resolved_module_background(&self) -> Option<Color> {
+        resolve_optional_color(self.module_background.as_deref(), "bar.module_background")
+    }
+
+    /// Effective groups for a side. If `groups_*` is set, returns it as-is.
+    /// Otherwise wraps each entry of `modules_*` in its own single-module
+    /// group (backward compatible with the flat layout).
+    pub fn effective_groups_left(&self) -> Vec<Vec<String>> {
+        effective_groups(&self.groups_left, &self.modules_left)
+    }
+
+    pub fn effective_groups_center(&self) -> Vec<Vec<String>> {
+        effective_groups(&self.groups_center, &self.modules_center)
+    }
+
+    pub fn effective_groups_right(&self) -> Vec<Vec<String>> {
+        effective_groups(&self.groups_right, &self.modules_right)
+    }
+}
+
+fn effective_groups(groups: &[Vec<String>], flat: &[String]) -> Vec<Vec<String>> {
+    if !groups.is_empty() {
+        groups
+            .iter()
+            .filter(|g| !g.is_empty())
+            .cloned()
+            .collect()
+    } else {
+        flat.iter().map(|m| vec![m.clone()]).collect()
+    }
 }
 
 pub fn resolve_color(raw: Option<&str>, fallback: Color, context: &str) -> Color {
@@ -378,60 +473,136 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{BarConfig, Config};
     use crate::renderer::color::Color;
+
+    fn parse_bar(toml: &str) -> BarConfig {
+        let cfg: Config = toml::from_str(toml).expect("config should parse");
+        cfg.bar
+            .into_iter()
+            .next()
+            .map(|(_, b)| b)
+            .expect("expected at least one [bar.*] section")
+    }
 
     #[test]
     fn parses_custom_font_settings() {
-        let config: Config = toml::from_str(
+        let bar = parse_bar(
             r#"
+                [bar.top]
                 height = 30
                 font = "JetBrains Mono"
                 font_size = 16.5
             "#,
-        )
-        .expect("config should parse");
+        );
 
-        assert_eq!(config.resolved_font_family(), "JetBrains Mono");
-        assert_eq!(config.resolved_font_size(), 16.5);
+        assert_eq!(bar.resolved_font_family(), "JetBrains Mono");
+        assert_eq!(bar.resolved_font_size(), 16.5);
     }
 
     #[test]
     fn falls_back_for_blank_or_invalid_font_settings() {
-        let config: Config = toml::from_str(
+        let bar = parse_bar(
             r#"
+                [bar.top]
                 height = 30
                 font = "   "
                 font_size = 0.0
             "#,
-        )
-        .expect("config should parse");
+        );
 
-        assert_eq!(config.resolved_font_family(), "monospace");
-        assert_eq!(config.resolved_font_size(), 14.0);
+        assert_eq!(bar.resolved_font_family(), "monospace");
+        assert_eq!(bar.resolved_font_size(), 14.0);
     }
 
     #[test]
     fn parses_bar_colors_and_padding() {
-        let config: Config = toml::from_str(
+        let bar = parse_bar(
             r##"
+                [bar.top]
                 height = 30
                 background = "#112233"
                 foreground = "#ddeeff"
                 padding_left = 12.0
                 padding_right = 6.0
             "##,
-        )
-        .expect("config should parse");
+        );
 
         assert_eq!(
-            config.resolved_background_color(),
+            bar.resolved_background_color(),
             Color::from_hex("#112233").unwrap()
         );
         assert_eq!(
-            config.resolved_foreground_color(),
+            bar.resolved_foreground_color(),
             Color::from_hex("#ddeeff").unwrap()
         );
-        assert_eq!(config.resolved_padding(), (12.0, 6.0));
+        assert_eq!(bar.resolved_padding(), (12.0, 6.0));
+    }
+
+    #[test]
+    fn parses_groups_and_pill_styling() {
+        let bar = parse_bar(
+            r##"
+                [bar.top]
+                height = 50
+                background = "#00000000"
+                margin_top = 10.0
+                margin_bottom = 6.0
+                margin_left = 8.0
+                margin_right = 8.0
+                group_spacing = 10.0
+                corner_radius = 6.0
+                module_background = "#1e1e2ecc"
+
+                groups_left   = [["clock", "workspaces"]]
+                groups_center = [["playback"]]
+                groups_right  = [["network", "cpu"], ["tray"]]
+            "##,
+        );
+
+        assert_eq!(bar.margin_top, 10.0);
+        assert_eq!(bar.group_spacing, 10.0);
+        assert_eq!(bar.corner_radius, 6.0);
+        assert_eq!(
+            bar.resolved_module_background(),
+            Color::from_hex("#1e1e2ecc"),
+        );
+        assert_eq!(
+            bar.effective_groups_left(),
+            vec![vec!["clock".to_string(), "workspaces".to_string()]]
+        );
+        assert_eq!(
+            bar.effective_groups_right(),
+            vec![
+                vec!["network".to_string(), "cpu".to_string()],
+                vec!["tray".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn flat_modules_become_single_module_groups_when_groups_unset() {
+        let bar = parse_bar(
+            r#"
+                [bar.top]
+                height = 30
+                modules_left   = ["clock", "workspaces"]
+                modules_center = ["playback"]
+                modules_right  = ["network", "tray"]
+            "#,
+        );
+
+        assert_eq!(
+            bar.effective_groups_left(),
+            vec![vec!["clock".to_string()], vec!["workspaces".to_string()]]
+        );
+        assert_eq!(
+            bar.effective_groups_center(),
+            vec![vec!["playback".to_string()]]
+        );
+        assert_eq!(
+            bar.effective_groups_right(),
+            vec![vec!["network".to_string()], vec!["tray".to_string()]]
+        );
     }
 }

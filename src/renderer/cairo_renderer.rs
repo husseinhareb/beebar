@@ -43,6 +43,39 @@ impl Renderer for CairoRenderer {
         let _ = cr.fill();
     }
 
+    fn draw_rounded_rect(&mut self, rect: Rect, radius: f64, color: Color) {
+        let cr = self.cr.as_ref().expect("call begin() first");
+        let r = radius
+            .max(0.0)
+            .min(rect.width.max(0.0) / 2.0)
+            .min(rect.height.max(0.0) / 2.0);
+        if r <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
+            cr.set_source_rgba(color.r, color.g, color.b, color.a);
+            cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+            let _ = cr.fill();
+            return;
+        }
+
+        use std::f64::consts::PI;
+        let x = rect.x;
+        let y = rect.y;
+        let w = rect.width;
+        let h = rect.height;
+        cr.new_sub_path();
+        // Top-right corner.
+        cr.arc(x + w - r, y + r, r, -PI / 2.0, 0.0);
+        // Bottom-right corner.
+        cr.arc(x + w - r, y + h - r, r, 0.0, PI / 2.0);
+        // Bottom-left corner.
+        cr.arc(x + r, y + h - r, r, PI / 2.0, PI);
+        // Top-left corner.
+        cr.arc(x + r, y + r, r, PI, 3.0 * PI / 2.0);
+        cr.close_path();
+
+        cr.set_source_rgba(color.r, color.g, color.b, color.a);
+        let _ = cr.fill();
+    }
+
     fn draw_text(&mut self, pos: Point, text: &str, style: &TextStyle) -> f64 {
         let cr = self.cr.as_ref().expect("call begin() first");
         let layout = pangocairo::create_layout(cr);

@@ -6,6 +6,7 @@ use crate::core::layout::Alignment;
 use crate::core::module::ModuleChrome;
 use crate::core::module::battery::BatteryIcons;
 use crate::core::module::battery::BatteryModule;
+use crate::core::module::bluetooth::BluetoothModule;
 use crate::core::module::brightness::BrightnessIcons;
 use crate::core::module::brightness::BrightnessModule;
 use crate::core::module::clock::ClockModule;
@@ -19,6 +20,7 @@ use crate::core::module::temperature::TemperatureModule;
 use crate::core::module::tray::TrayModule;
 use crate::core::module::volume::VolumeIcons;
 use crate::core::module::volume::VolumeModule;
+use crate::core::module::window::WindowModule;
 use crate::core::module::workspaces::WorkspacesModule;
 use crate::renderer::primitives::TextStyle;
 use std::collections::HashSet;
@@ -98,6 +100,19 @@ fn build_module(
             let size = mcfg.icon_size.unwrap_or(22);
             Some(Box::new(TrayModule::new(size, chrome)))
         }
+        "window" => Some(Box::new(WindowModule::new(
+            mcfg.backend.clone(),
+            mcfg.max_length,
+            mcfg.empty_label.clone(),
+            chrome,
+        ))),
+        "bluetooth" => Some(Box::new(BluetoothModule::new(
+            mcfg.format.clone(),
+            mcfg.icon_on.clone(),
+            mcfg.icon_off.clone(),
+            mcfg.icon_no_controller.clone(),
+            chrome,
+        ))),
         "volume" => Some(Box::new(VolumeModule::new(
             mcfg.backend.clone(),
             mcfg.device.clone(),
@@ -115,37 +130,42 @@ fn build_module(
     }
 }
 
-fn add_ordered_modules(
+fn add_grouped_modules(
     bar: &mut Bar,
     config: &Config,
-    names: &[String],
+    groups: &[Vec<String>],
     alignment: Alignment,
     default_padding: (f64, f64),
     placed: &mut HashSet<String>,
 ) {
-    for name in names {
-        if !placed.insert(name.clone()) {
-            log::warn!(
-                "Module '{}' is listed more than once in section ordering; skipping duplicate",
-                name
-            );
-            continue;
+    for group in groups {
+        let mut accepted = Vec::with_capacity(group.len());
+        for name in group {
+            if !placed.insert(name.clone()) {
+                log::warn!(
+                    "Module '{}' is listed more than once in section ordering; skipping duplicate",
+                    name
+                );
+                continue;
+            }
+
+            let Some(mcfg) = config.module.get(name) else {
+                log::warn!(
+                    "Module '{}' is listed in the bar layout but has no [module.{}] config",
+                    name,
+                    name
+                );
+                continue;
+            };
+
+            let Some(module) = build_module(name, mcfg, default_padding) else {
+                continue;
+            };
+
+            bar.add_module(name.clone(), module);
+            accepted.push(name.clone());
         }
-
-        let Some(mcfg) = config.module.get(name) else {
-            log::warn!(
-                "Module '{}' is listed in the bar layout but has no [module.{}] config",
-                name,
-                name
-            );
-            continue;
-        };
-
-        let Some(module) = build_module(name, mcfg, default_padding) else {
-            continue;
-        };
-
-        bar.add_module(name.clone(), module, alignment);
+        bar.add_group(accepted, alignment);
     }
 }
 
@@ -157,6 +177,13 @@ pub fn build_bar(name: &str, bar_config: &BarConfig, config: &Config) -> Bar {
     bar.text_y_offset = bar_config.text_y_offset;
     let default_padding = bar_config.resolved_padding();
     bar.background = bar_config.resolved_background_color();
+    bar.margin_top = bar_config.margin_top.max(0.0);
+    bar.margin_bottom = bar_config.margin_bottom.max(0.0);
+    bar.margin_left = bar_config.margin_left.max(0.0);
+    bar.margin_right = bar_config.margin_right.max(0.0);
+    bar.group_spacing = bar_config.group_spacing.max(0.0);
+    bar.corner_radius = bar_config.corner_radius.max(0.0);
+    bar.group_background = bar_config.resolved_module_background();
     bar.text_style = TextStyle {
         color: bar_config.resolved_foreground_color(),
         font_family: bar_config.resolved_font_family(),
@@ -175,26 +202,30 @@ pub fn build_bar(name: &str, bar_config: &BarConfig, config: &Config) -> Bar {
 
     let mut placed = HashSet::new();
 
-    add_ordered_modules(
+    let groups_left = bar_config.effective_groups_left();
+    let groups_center = bar_config.effective_groups_center();
+    let groups_right = bar_config.effective_groups_right();
+
+    add_grouped_modules(
         &mut bar,
         config,
-        &bar_config.modules_left,
+        &groups_left,
         Alignment::Left,
         default_padding,
         &mut placed,
     );
-    add_ordered_modules(
+    add_grouped_modules(
         &mut bar,
         config,
-        &bar_config.modules_center,
+        &groups_center,
         Alignment::Center,
         default_padding,
         &mut placed,
     );
-    add_ordered_modules(
+    add_grouped_modules(
         &mut bar,
         config,
-        &bar_config.modules_right,
+        &groups_right,
         Alignment::Right,
         default_padding,
         &mut placed,
@@ -251,13 +282,51 @@ type = "brightness"
         assert_eq!(bars.len(), 1);
         let bar = &bars[0];
 
+        // Flat `modules_right` becomes one single-module group per entry,
+        // preserving order. Each inner Vec has exactly one module id.
         assert_eq!(
             bar.layout.right,
             vec![
-                "brightness".to_string(),
-                "battery".to_string(),
-                "volume".to_string(),
-                "cpu".to_string()
+                vec!["brightness".to_string()],
+                vec!["battery".to_string()],
+                vec!["volume".to_string()],
+                vec!["cpu".to_string()],
+            ]
+        );
+    }
+
+    #[test]
+    fn explicit_groups_take_precedence_over_flat_modules() {
+        let config: Config = toml::from_str(
+            r#"
+[bar.main]
+height = 30
+modules_right = ["cpu"]
+groups_right = [["brightness", "battery"], ["volume"]]
+
+[module.cpu]
+type = "cpu"
+
+[module.volume]
+type = "volume"
+
+[module.battery]
+type = "battery"
+
+[module.brightness]
+type = "brightness"
+"#,
+        )
+        .expect("test config should parse");
+
+        let bars = build_bars(&config);
+        let bar = &bars[0];
+
+        assert_eq!(
+            bar.layout.right,
+            vec![
+                vec!["brightness".to_string(), "battery".to_string()],
+                vec!["volume".to_string()],
             ]
         );
     }

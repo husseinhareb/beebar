@@ -229,20 +229,21 @@ fn load_icon_by_name(name: &str, theme_path: &str, size: u32) -> Option<IconData
     search_dirs.push(std::path::PathBuf::from("/usr/share/icons"));
     search_dirs.push(std::path::PathBuf::from("/usr/share/pixmaps"));
 
-    let sizes = [size, 48, 32, 64, 24, 16, 128, 256];
     let extensions = ["png", "svg", "xpm"];
 
     for dir in &search_dirs {
-        // First try size-specific sub-directories.
-        for &sz in &sizes {
+        // Pass 1: fixed-size subdirs we expect to exist. Listed in order of
+        // preference around the requested size, including 22 — the size that
+        // common app indicators (nm-applet, etc.) install icons under.
+        let preferred_sizes: [u32; 9] = [size, 48, 32, 22, 24, 64, 16, 128, 256];
+        for &sz in &preferred_sizes {
             for ext in &extensions {
-                // Hicolor-style: <theme>/<size>x<size>/apps/
                 let candidates = [
                     dir.join(format!("hicolor/{}x{}/apps/{}.{}", sz, sz, name, ext)),
                     dir.join(format!("hicolor/{}x{}/status/{}.{}", sz, sz, name, ext)),
+                    dir.join(format!("hicolor/{}x{}/devices/{}.{}", sz, sz, name, ext)),
                     dir.join(format!("{}x{}/apps/{}.{}", sz, sz, name, ext)),
                     dir.join(format!("{}x{}/{}.{}", sz, sz, name, ext)),
-                    dir.join(format!("{}.{}", name, ext)),
                 ];
                 for path in &candidates {
                     if path.exists() {
@@ -253,12 +254,64 @@ fn load_icon_by_name(name: &str, theme_path: &str, size: u32) -> Option<IconData
                 }
             }
         }
-        // Flat fallback: <dir>/<name>.png
+
+        // Pass 2: scan whatever <N>x<N> subdirectories actually exist under
+        // the current dir's hicolor/ — handles unusual icon-theme sizes that
+        // aren't in the preferred list.
+        for theme_root in [dir.join("hicolor"), dir.clone()] {
+            if let Some(found) = scan_size_subdirs(&theme_root, name, size, &extensions) {
+                return Some(found);
+            }
+        }
+
+        // Pass 3: flat fallback: <dir>/<name>.<ext>
         for ext in &extensions {
             let path = dir.join(format!("{}.{}", name, ext));
             if path.exists() {
                 if let Some(data) = load_image_file(&path, size) {
                     return Some(data);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Walk a theme root looking for `<N>x<N>/(apps|status|devices)/<name>.<ext>`
+/// directories. Picks the size closest to `target_size`.
+fn scan_size_subdirs(
+    theme_root: &std::path::Path,
+    name: &str,
+    target_size: u32,
+    extensions: &[&str],
+) -> Option<IconData> {
+    let entries = std::fs::read_dir(theme_root).ok()?;
+    let mut sized: Vec<(u32, std::path::PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().into_owned();
+        // Match "NxN" (16x16, 22x22, 48x48, etc.)
+        if let Some((w, h)) = dir_name.split_once('x') {
+            if w == h {
+                if let Ok(n) = w.parse::<u32>() {
+                    sized.push((n, path));
+                }
+            }
+        }
+    }
+    // Try closest size first.
+    sized.sort_by_key(|(n, _)| (*n as i64 - target_size as i64).abs());
+    for (_, dir) in sized {
+        for sub in ["apps", "status", "devices"] {
+            for ext in extensions {
+                let candidate = dir.join(sub).join(format!("{}.{}", name, ext));
+                if candidate.exists() {
+                    if let Some(data) = load_image_file(&candidate, target_size) {
+                        return Some(data);
+                    }
                 }
             }
         }

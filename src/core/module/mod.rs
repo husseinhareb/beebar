@@ -1,4 +1,5 @@
 pub mod battery;
+pub mod bluetooth;
 pub mod brightness;
 pub mod clock;
 pub mod cpu;
@@ -9,6 +10,7 @@ pub mod playback;
 pub mod temperature;
 pub mod tray;
 pub mod volume;
+pub mod window;
 pub mod workspaces;
 
 use crate::core::config::{ModuleConfig, resolve_length, resolve_optional_color};

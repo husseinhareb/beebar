@@ -131,6 +131,9 @@ impl BrightnessIcons {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BrightnessBackend {
+    /// Read/write directly via /sys/class/backlight/<device>/. Works on most
+    /// Linux systems out of the box and doesn't need an external binary.
+    Sysfs,
     Brightnessctl,
     Unavailable,
 }
@@ -138,6 +141,7 @@ enum BrightnessBackend {
 impl BrightnessBackend {
     fn from_config(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "sysfs" => Some(Self::Sysfs),
             "brightnessctl" => Some(Self::Brightnessctl),
             "auto" => None,
             _ => None,
@@ -147,12 +151,13 @@ impl BrightnessBackend {
     fn binary(self) -> Option<&'static str> {
         match self {
             Self::Brightnessctl => Some("brightnessctl"),
-            Self::Unavailable => None,
+            Self::Sysfs | Self::Unavailable => None,
         }
     }
 
     fn display_name(self) -> &'static str {
         match self {
+            Self::Sysfs => "sysfs",
             Self::Brightnessctl => "brightnessctl",
             Self::Unavailable => "unavailable",
         }
@@ -288,9 +293,11 @@ impl BrightnessModule {
         self.last_refresh = Some(Instant::now());
 
         let result = match self.backend {
+            BrightnessBackend::Sysfs => read_sysfs_state(self.device.as_deref()),
             BrightnessBackend::Brightnessctl => read_brightnessctl_state(self.device.as_deref()),
             BrightnessBackend::Unavailable => Err(
-                "No supported brightness backend found in PATH; install brightnessctl".to_string(),
+                "No supported brightness backend found (need /sys/class/backlight or brightnessctl)"
+                    .to_string(),
             ),
         };
 
@@ -331,6 +338,9 @@ impl BrightnessModule {
 
         let target = percent.min(self.max_brightness);
         let result = match self.backend {
+            BrightnessBackend::Sysfs => {
+                write_sysfs_brightness(self.device.as_deref(), target).map(|_| String::new())
+            }
             BrightnessBackend::Brightnessctl => {
                 let mut args = vec!["-q".to_string()];
                 args.extend(target_args(self.device.as_deref()));
@@ -494,14 +504,24 @@ impl Module for BrightnessModule {
 fn detect_backend(preferred: Option<&str>) -> BrightnessBackend {
     if let Some(value) = preferred {
         if let Some(backend) = BrightnessBackend::from_config(value) {
-            if let Some(binary) = backend.binary() {
-                if command_exists(binary) {
-                    return backend;
+            match backend {
+                BrightnessBackend::Sysfs => {
+                    if sysfs_backlight_root().exists() {
+                        return BrightnessBackend::Sysfs;
+                    }
+                    log::warn!(
+                        "Configured brightness backend 'sysfs' but /sys/class/backlight is missing; falling back to auto-detect",
+                    );
                 }
-                log::warn!(
-                    "Configured brightness backend '{}' is not installed; falling back to auto-detect",
-                    value
-                );
+                BrightnessBackend::Brightnessctl => {
+                    if command_exists("brightnessctl") {
+                        return BrightnessBackend::Brightnessctl;
+                    }
+                    log::warn!(
+                        "Configured brightness backend 'brightnessctl' is not installed; falling back to auto-detect",
+                    );
+                }
+                BrightnessBackend::Unavailable => {}
             }
         } else {
             log::warn!(
@@ -511,11 +531,82 @@ fn detect_backend(preferred: Option<&str>) -> BrightnessBackend {
         }
     }
 
-    if command_exists("brightnessctl") {
+    // Prefer sysfs: no external dependency, works on every distro.
+    if sysfs_has_backlight() {
+        BrightnessBackend::Sysfs
+    } else if command_exists("brightnessctl") {
         BrightnessBackend::Brightnessctl
     } else {
         BrightnessBackend::Unavailable
     }
+}
+
+fn sysfs_backlight_root() -> std::path::PathBuf {
+    std::path::PathBuf::from("/sys/class/backlight")
+}
+
+fn sysfs_has_backlight() -> bool {
+    std::fs::read_dir(sysfs_backlight_root())
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
+}
+
+/// Resolve which sysfs backlight device to use. Returns `None` if no backlight
+/// devices are present at all.
+fn resolve_sysfs_device(preferred: Option<&str>) -> Option<std::path::PathBuf> {
+    let root = sysfs_backlight_root();
+    if let Some(name) = preferred {
+        let path = root.join(name);
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(&root).ok()?.filter_map(Result::ok).collect();
+    entries.sort_by_key(|e| e.file_name());
+    let first = entries.into_iter().next()?;
+    Some(first.path())
+}
+
+fn read_sysfs_state(device: Option<&str>) -> Result<BrightnessState, String> {
+    let dir = resolve_sysfs_device(device)
+        .ok_or_else(|| "No /sys/class/backlight devices present".to_string())?;
+    let max_raw = std::fs::read_to_string(dir.join("max_brightness"))
+        .map_err(|e| format!("failed to read max_brightness: {e}"))?;
+    let cur_raw = std::fs::read_to_string(dir.join("brightness"))
+        .map_err(|e| format!("failed to read brightness: {e}"))?;
+    let max: u64 = max_raw
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid max_brightness '{}': {e}", max_raw.trim()))?;
+    let cur: u64 = cur_raw
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid brightness '{}': {e}", cur_raw.trim()))?;
+    if max == 0 {
+        return Err("max_brightness is 0".to_string());
+    }
+    let percent = ((cur as f64 / max as f64) * 100.0).round().clamp(0.0, 100.0) as u16;
+    Ok(BrightnessState {
+        brightness_percent: percent,
+    })
+}
+
+fn write_sysfs_brightness(device: Option<&str>, percent: u16) -> Result<(), String> {
+    let dir = resolve_sysfs_device(device)
+        .ok_or_else(|| "No /sys/class/backlight devices present".to_string())?;
+    let max_raw = std::fs::read_to_string(dir.join("max_brightness"))
+        .map_err(|e| format!("failed to read max_brightness: {e}"))?;
+    let max: u64 = max_raw
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid max_brightness '{}': {e}", max_raw.trim()))?;
+    let value = ((percent.min(100) as u64 * max) as f64 / 100.0).round() as u64;
+    std::fs::write(dir.join("brightness"), value.to_string()).map_err(|e| {
+        format!(
+            "failed to write brightness (need write access to {}): {e}",
+            dir.join("brightness").display()
+        )
+    })
 }
 
 fn command_exists(command: &str) -> bool {
@@ -603,46 +694,7 @@ mod tests {
     fn default_module_config() -> ModuleConfig {
         ModuleConfig {
             kind: "brightness".to_string(),
-            format: None,
-            command: None,
-            foreground: None,
-            background: None,
-            padding_left: None,
-            padding_right: None,
-            icon: None,
-            icon_unknown: None,
-            icon_unavailable: None,
-            icon_muted: None,
-            icon_low: None,
-            icon_medium: None,
-            icon_high: None,
-            icon_full: None,
-            labels: None,
-            count: None,
-            icon_size: None,
-            slider_width: None,
-            icon_spacing: None,
-            icon_gap: None,
-            max_volume: None,
-            max_brightness: None,
-            backend: None,
-            device: None,
-            interface: None,
-            active_color: None,
-            occupied_color: None,
-            empty_color: None,
-            filled_color: None,
-            muted_color: None,
-            sensor: None,
-            warn_threshold: None,
-            critical_threshold: None,
-            unavailable_color: None,
-            warn_color: None,
-            critical_color: None,
-            glyph_left: None,
-            glyph_right: None,
-            glyph_filled: None,
-            glyph_empty: None,
+            ..Default::default()
         }
     }
 

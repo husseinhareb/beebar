@@ -42,6 +42,13 @@ pub trait Renderer {
     /// Fill a rectangle.
     fn draw_rect(&mut self, rect: Rect, color: Color);
 
+    /// Fill a rectangle with rounded corners. Default falls back to
+    /// `draw_rect` so renderers without arc support degrade gracefully.
+    fn draw_rounded_rect(&mut self, rect: Rect, radius: f64, color: Color) {
+        let _ = radius;
+        self.draw_rect(rect, color);
+    }
+
     /// Draw text and return the width it occupied.
     fn draw_text(&mut self, pos: Point, text: &str, style: &TextStyle) -> f64;
 

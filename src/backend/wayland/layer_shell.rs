@@ -20,12 +20,13 @@ use wayland_client::{
     protocol::{wl_output, wl_pointer, wl_seat},
 };
 
-use crate::core::bar::Bar;
+use crate::core::bar::{Bar, render_bar};
 use crate::core::event::{ClickEvent, MouseButton};
+use crate::core::layout::BarLayout;
 use crate::core::module::ModuleId;
 use crate::core::popup::{POPUP_GAP, PopupLayout, PopupMenu, draw_popup, layout_popup};
 use crate::renderer::cairo_renderer::CairoRenderer;
-use crate::renderer::primitives::{Point, Rect, Renderer};
+use crate::renderer::primitives::Renderer;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PointerFocus {
@@ -245,93 +246,8 @@ fn draw_frame(state: &mut WaylandState) {
         )
         .expect("Failed to create buffer");
 
-    // Render via cairo
-    state.renderer.begin(width, height);
-
-    // Background
-    state.renderer.draw_rect(
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width: width as f64,
-            height: height as f64,
-        },
-        state.bar.background,
-    );
-
-    // Compute layout
-    let layout = &state.bar.layout;
-
-    let measure = |id: &String| -> f64 {
-        if let Some(view) = state.bar.module_view(id) {
-            if !view.icons.is_empty() {
-                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4)) as f64;
-                let n = view.icons.len() as f64;
-                view.padding.0
-                    + view.padding.1
-                    + n * icon_size
-                    + (n - 1.0).max(0.0) * view.icon_spacing
-            } else {
-                view.text_width(&state.renderer) + view.padding.0 + view.padding.1
-            }
-        } else {
-            0.0
-        }
-    };
-
-    let regions = layout.compute(width as f64, &measure);
-
-    // Draw modules
-    for region in &regions {
-        if let Some(view) = state.bar.module_view(&region.id) {
-            if let Some(bg) = view.background {
-                state.renderer.draw_rect(
-                    Rect {
-                        x: region.x,
-                        y: 0.0,
-                        width: region.width,
-                        height: height as f64,
-                    },
-                    bg,
-                );
-            }
-
-            if !view.icons.is_empty() {
-                // Render tray icons side by side.
-                let icon_size = view.icon_size.unwrap_or_else(|| height.saturating_sub(4));
-                let mut ix = region.x + view.padding.0;
-                let iy = ((height as f64 - icon_size as f64) / 2.0).max(0.0);
-                for icon_data in &view.icons {
-                    state.renderer.draw_icon(
-                        Point { x: ix, y: iy },
-                        &icon_data.pixels,
-                        icon_data.width,
-                        icon_data.height,
-                        icon_size,
-                    );
-                    ix += icon_size as f64 + view.icon_spacing;
-                }
-            } else {
-                let y = (height as f64 - view.text_height(&state.renderer)) / 2.0
-                    + state.bar.text_y_offset;
-                let mut x = region.x + view.padding.0;
-                if view.text_segments.is_empty() {
-                    state
-                        .renderer
-                        .draw_text(Point { x, y }, &view.text, &view.style);
-                } else {
-                    for segment in &view.text_segments {
-                        x +=
-                            state
-                                .renderer
-                                .draw_text(Point { x, y }, &segment.text, &segment.style);
-                    }
-                }
-            }
-        }
-    }
-
-    state.renderer.end();
+    // Render via cairo, sharing the renderer + layout logic with X11.
+    render_bar(&state.bar, &mut state.renderer, width, height);
 
     // Copy rendered pixels to Wayland buffer
     let data = state.renderer.data();
@@ -887,28 +803,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
 
                 // Compute layout regions using immutable borrows of bar + renderer.
                 let width = state.width;
-                let height = state.height;
-                let regions = {
-                    let measure = |id: &String| -> f64 {
-                        if let Some(view) = state.bar.module_view(id) {
-                            if !view.icons.is_empty() {
-                                let icon_size_px =
-                                    view.icon_size.unwrap_or_else(|| height.saturating_sub(4))
-                                        as f64;
-                                let n = view.icons.len() as f64;
-                                view.padding.0
-                                    + view.padding.1
-                                    + n * icon_size_px
-                                    + (n - 1.0).max(0.0) * view.icon_spacing
-                            } else {
-                                view.text_width(&state.renderer) + view.padding.0 + view.padding.1
-                            }
-                        } else {
-                            0.0
-                        }
-                    };
-                    state.bar.layout.compute(width as f64, &measure)
-                };
+                let groups = state.bar.compute_groups(width as f64, &state.renderer);
+                let regions = BarLayout::flatten_modules(&groups);
                 state.bar.handle_click(&regions, &click);
                 state.bar.update_all();
                 sync_popup_surface(state);
