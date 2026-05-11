@@ -191,6 +191,13 @@ pub struct ModuleConfig {
     #[serde(default)]
     pub scroll_step: Option<u16>,
 
+    /// Override the default refresh interval (in milliseconds) for this
+    /// module. Lets users tune e.g. `[module.battery] refresh_interval_ms =
+    /// 30000` without recompiling. Each module type has a sensible default;
+    /// leaving this unset uses that.
+    #[serde(default)]
+    pub refresh_interval_ms: Option<u64>,
+
     /// For the volume module: "sink" (default — speakers) or "source"
     /// (microphone). Mirrors waybar's `pulseaudio#microphone`.
     #[serde(default)]

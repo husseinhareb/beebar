@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Instant;
 
 use super::event::ClickEvent;
 use super::layout::{BarLayout, GroupRegion, LayoutSpacing, ModuleRegion};
@@ -6,6 +7,17 @@ use super::module::{Module, ModuleId, ModuleView};
 use super::popup::PopupMenu;
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer, TextStyle};
+
+/// Outcome of a bar tick. Backends use this to decide whether to redraw and
+/// how long to wait before the next tick.
+#[derive(Debug, Clone, Copy)]
+pub struct TickResult {
+    /// At least one module's `update()` was called this tick.
+    pub updated: bool,
+    /// Instant the next module is due — backends should poll until then. None
+    /// if there are no modules at all.
+    pub next_due: Option<Instant>,
+}
 
 /// Central bar state – owns all modules and the layout.
 pub struct Bar {
@@ -32,8 +44,12 @@ pub struct Bar {
     pub corner_radius: f64,
     /// Default fill color for pill groups.
     pub group_background: Option<Color>,
-    /// How often modules are polled and the bar redrawn.
+    /// Upper bound on time between redraws. Modules with background workers
+    /// (tray, bluetooth, window-via-inotify) push their state asynchronously,
+    /// so the bar still redraws at this cadence even when no module is due.
     pub refresh_interval: std::time::Duration,
+    /// Per-module "next time `update()` should be called". Populated lazily.
+    next_update: HashMap<ModuleId, Instant>,
 }
 
 impl Bar {
@@ -56,6 +72,7 @@ impl Bar {
             corner_radius: 0.0,
             group_background: None,
             refresh_interval: std::time::Duration::from_millis(200),
+            next_update: HashMap::new(),
         }
     }
 
@@ -81,11 +98,46 @@ impl Bar {
         }
     }
 
-    /// Update every module.
+    /// Force every module to refresh immediately and reset their schedules
+    /// so the next due time is one interval from now. Used after pointer
+    /// events where the caller wants every module's view current right away.
     pub fn update_all(&mut self) {
-        for module in self.modules.values_mut() {
+        let now = Instant::now();
+        for (id, module) in &mut self.modules {
             module.update();
+            self.next_update
+                .insert(id.clone(), now + module.update_interval());
         }
+    }
+
+    /// Run any modules whose interval has elapsed. Returns whether anything
+    /// updated and when the next module is due — backends use the deadline
+    /// to size their poll timeout instead of busy-ticking.
+    pub fn tick(&mut self) -> TickResult {
+        let now = Instant::now();
+        let mut updated = false;
+        let mut next_due: Option<Instant> = None;
+
+        for (id, module) in &mut self.modules {
+            let due = *self
+                .next_update
+                .entry(id.clone())
+                // Brand-new module: run it on the first tick rather than
+                // waiting a full interval before showing anything.
+                .or_insert(now);
+
+            if now >= due {
+                module.update();
+                let new_due = now + module.update_interval();
+                self.next_update.insert(id.clone(), new_due);
+                updated = true;
+                next_due = Some(next_due.map_or(new_due, |n| n.min(new_due)));
+            } else {
+                next_due = Some(next_due.map_or(due, |n| n.min(due)));
+            }
+        }
+
+        TickResult { updated, next_due }
     }
 
     pub fn module_view(&self, id: &ModuleId) -> Option<ModuleView> {

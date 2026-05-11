@@ -112,6 +112,12 @@ impl NetworkModule {
 }
 
 impl Module for NetworkModule {
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn update(&mut self) {
         let Some(interface) = resolve_interface(self.configured_interface.as_deref()) else {
             if !self.logged_refresh_error {
@@ -262,6 +268,7 @@ mod tests {
             background: None,
             padding: (8.0, 8.0),
             icon_spacing: None,
+            update_interval: None,
         }
     }
 

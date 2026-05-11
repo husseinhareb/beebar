@@ -430,6 +430,12 @@ impl Module for BrightnessModule {
         self.maybe_refresh();
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn view(&self) -> ModuleView {
         if self.backend == BrightnessBackend::Unavailable {
             return self.chrome.apply(ModuleView {
@@ -757,6 +763,7 @@ mod tests {
             background: None,
             padding: PADDING,
             icon_spacing: None,
+            update_interval: None,
         }
     }
 

@@ -66,6 +66,12 @@ impl Module for MemoryModule {
         };
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn view(&self) -> ModuleView {
         self.chrome.apply(ModuleView {
             text: self.render_text(),
@@ -124,6 +130,7 @@ mod tests {
             background: None,
             padding: (8.0, 8.0),
             icon_spacing: None,
+            update_interval: None,
         }
     }
 

@@ -124,6 +124,10 @@ pub struct ModuleChrome {
     pub background: Option<Color>,
     pub padding: (f64, f64),
     pub icon_spacing: Option<f64>,
+    /// User-set update interval override (`refresh_interval_ms` in TOML). When
+    /// `Some`, takes priority over the module's built-in default. Modules
+    /// reference this through their own `update_interval()` impl.
+    pub update_interval: Option<std::time::Duration>,
 }
 
 impl ModuleChrome {
@@ -144,6 +148,10 @@ impl ModuleChrome {
                 ),
             ),
             icon_spacing: config.icon_spacing,
+            update_interval: config
+                .refresh_interval_ms
+                .filter(|ms| *ms > 0)
+                .map(|ms| std::time::Duration::from_millis(ms.max(10))),
         }
     }
 
@@ -221,6 +229,15 @@ pub trait Module: Send {
     /// Return the current renderable view for this module.
     fn view(&self) -> ModuleView;
 
+    /// How often `update()` should be called for this module. Defaults to 1s.
+    /// Modules with own background workers (tray, bluetooth, window via
+    /// inotify) can override to a longer interval since their state arrives
+    /// asynchronously; cheap-to-render modules with frequently-changing data
+    /// (workspaces, window-title fallback) override to something shorter.
+    fn update_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
+    }
+
     /// Handle a click event on this module's area. Default: no-op.
     fn click(&mut self, _event: ClickEvent) {}
 
@@ -235,3 +252,4 @@ pub trait Module: Send {
     /// Dismiss the module popup, if any.
     fn dismiss_popup(&mut self) {}
 }
+

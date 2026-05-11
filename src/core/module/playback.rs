@@ -488,6 +488,12 @@ impl PlaybackModule {
 }
 
 impl Module for PlaybackModule {
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn update(&mut self) {
         let connection = match self.ensure_connection() {
             Ok(connection) => connection,
@@ -703,6 +709,7 @@ mod tests {
             background: None,
             padding: (8.0, 8.0),
             icon_spacing: None,
+            update_interval: None,
         }
     }
 

@@ -83,6 +83,14 @@ impl Module for BluetoothModule {
         // Polling runs in the background; nothing to do here.
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        // update() is a no-op — the real polling runs on a dedicated tokio
+        // task. This interval only governs how often we wake the bar.
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn view(&self) -> ModuleView {
         let state = self.state.lock().unwrap().clone();
         let (icon, status) = match state {
