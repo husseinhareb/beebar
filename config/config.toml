@@ -6,9 +6,15 @@ background = "#00000000"        # fully transparent bar surface; only pills show
 foreground = "#cdd6f4"
 font = "JetBrainsMono Nerd Font"
 font_size = 13.5
+bold = true                      # render all text at Pango Weight::Bold
 padding_left = 8.0
 padding_right = 8.0
 position = "top"
+
+# ── Refresh rate ──────────────────────────────────────────────────────────────
+# How often (in milliseconds) modules are polled and the bar is redrawn.
+# Lower values feel more responsive; higher values reduce CPU usage.
+# refresh_interval_ms = 200   # default: 200 ms (5 Hz)
 
 # ── Pill styling ──────────────────────────────────────────────────────────────
 # Vertical inset of pills from the bar edges, horizontal gap between pills,
@@ -22,8 +28,6 @@ corner_radius   = 6.0
 module_background = "#1e1e2ecc"
 
 # ── Pill groups (each inner array = one continuous pill) ──────────────────────
-# Clock and workspaces are now in separate pills, matching the waybar
-# screenshot. Add or rearrange entries to redesign the bar.
 groups_left = [
     ["clock"],
     ["workspaces"],
@@ -34,12 +38,11 @@ groups_center = [
 groups_right = [
     ["network", "bluetooth"],
     ["temperature", "battery"],
+    ["brightness", "volume", "microphone"],
     ["tray"],
 ]
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
-# `empty_color` is brightened from #45475a → #585b70 so inactive workspaces are
-# visible against the dark pill background.
 
 [module.workspaces]
 type = "workspaces"
@@ -50,10 +53,12 @@ occupied_color = "#a6adc8"
 empty_color    = "#585b70"
 
 # ── Clock (mint-green, matches waybar #clock) ─────────────────────────────────
+# `` U+F017 = nf-fa-clock, `` U+F073 = nf-fa-calendar.
 
 [module.clock]
 type = "clock"
-format = "  %I:%M %p   %a, %b %e"
+# 󰥔 = nf-md-clock-time-eight, 󰃭 = nf-md-calendar
+format = "󰥔 %I:%M %p   󰃭 %a, %b %e"
 foreground = "#00d483"
 
 # ── Window (centre pill, shows the active window title) ──────────────────────
@@ -75,6 +80,12 @@ foreground = "#cdd6f4"
 type = "playback"
 format = "{icon} {track}  {buttons}"
 foreground = "#cdd6f4"
+# Playback control button icons (defaults shown):
+# icon_previous = "󰒮"
+# icon_stop     = "󰓛"
+# icon_play     = "󰐊"
+# icon_pause    = "󰏤"
+# icon_next     = "󰒭"
 
 # ── Network (blue, like waybar #network) ──────────────────────────────────────
 
@@ -92,19 +103,20 @@ icon_on            = "󰂯"
 icon_off           = "󰂲"
 icon_no_controller = "󰂲"
 foreground = "#0062ff"
+# poll_interval_ms = 2000   # default: 2000 ms
 
 # ── CPU ───────────────────────────────────────────────────────────────────────
 
 [module.cpu]
 type = "cpu"
-icon = ""
+icon = "󰍛"            # 󰍛 = nf-md-memory (waybar uses the same idea for cpu)
 foreground = "#89dceb"
 
 # ── Temperature (teal, with warn/critical highlights) ─────────────────────────
 
 [module.temperature]
 type = "temperature"
-icon = ""
+icon = "󰔏"            # 󰔏 = nf-md-thermometer
 warn_threshold     = 75.0
 critical_threshold = 90.0
 warn_color     = "#f9e2af"
@@ -118,51 +130,52 @@ type = "memory"
 format = "󰍛 {used}/{total}"
 
 # ── Brightness ────────────────────────────────────────────────────────────────
-# `backend = "sysfs"` reads /sys/class/backlight/<device>/ directly so no
-# brightnessctl install is required. Setting writes to that file (may need
-# udev rules for non-root write access).
+# Compact form (no slider): renders as `<icon> <pct>%` — matches waybar.
 
 [module.brightness]
 type = "brightness"
 backend = "sysfs"
 device  = "nvidia_0"
-slider_width = 14
-icon_gap     = 1
-filled_color      = "#f9e2af"
-empty_color       = "#45475a"
-unavailable_color = "#6c7086"
-icon_low         = "󰃚"
-icon_medium      = "󰃝"
-icon_high        = "󰃠"
+show_slider = false
+icon_low    = "󰃚"
+icon_medium = "󰃝"
+icon_high   = "󰃠"
 icon_unknown     = ""
 icon_unavailable = "󰃞"
-glyph_left   = ""
-glyph_filled = "█"
-glyph_empty  = "░"
-glyph_right  = ""
 foreground = "#f9e2af"
 
-# ── Volume (green, like waybar #pulseaudio) ───────────────────────────────────
+# ── Volume (output / speakers) ────────────────────────────────────────────────
 
 [module.volume]
 type = "volume"
-slider_width = 14
-icon_gap     = 1
-filled_color      = "#a6e3a1"
-empty_color       = "#45475a"
-muted_color       = "#f38ba8"
-unavailable_color = "#6c7086"
+target = "sink"
+show_slider = false
 icon_muted       = "󰝟"
 icon_unknown     = ""
 icon_low         = "󰕿"
 icon_medium      = "󰖀"
 icon_high        = "󰕾"
 icon_unavailable = "󰖁"
-glyph_left   = ""
-glyph_filled = "█"
-glyph_empty  = "░"
-glyph_right  = ""
+muted_color       = "#f38ba8"
+unavailable_color = "#6c7086"
 foreground = "#679df5"
+
+# ── Microphone (input / source — second instance of the volume module) ───────
+
+[module.microphone]
+type = "volume"
+target = "source"
+show_slider = false
+# 󰍬 = nf-md-microphone, 󰍭 = nf-md-microphone-off, 󰍳 = nf-md-microphone-question
+icon_muted       = "󰍭"
+icon_unknown     = "󰍳"
+icon_low         = "󰍬"
+icon_medium      = "󰍬"
+icon_high        = "󰍬"
+icon_unavailable = "󰍭"
+muted_color       = "#f38ba8"
+unavailable_color = "#6c7086"
+foreground = "#bb84ff"
 
 # ── Battery (green, like waybar #battery) ─────────────────────────────────────
 

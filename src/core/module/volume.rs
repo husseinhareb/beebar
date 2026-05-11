@@ -13,6 +13,25 @@ use crate::renderer::primitives::TextStyle;
 
 const DEFAULT_DEVICE_WPCTL: &str = "@DEFAULT_AUDIO_SINK@";
 const DEFAULT_DEVICE_PACTL: &str = "@DEFAULT_SINK@";
+const DEFAULT_SOURCE_WPCTL: &str = "@DEFAULT_AUDIO_SOURCE@";
+const DEFAULT_SOURCE_PACTL: &str = "@DEFAULT_SOURCE@";
+
+/// Whether a `VolumeModule` operates on the default sink (speakers) or
+/// the default source (microphone). Selected via the `target` config field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    Sink,
+    Source,
+}
+
+impl Target {
+    fn from_config(value: Option<&str>) -> Self {
+        match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+            Some("source") | Some("input") | Some("microphone") | Some("mic") => Self::Source,
+            _ => Self::Sink,
+        }
+    }
+}
 const DEFAULT_SLIDER_WIDTH: usize = 20;
 const DEFAULT_MAX_VOLUME: u16 = 100;
 const MAX_ALLOWED_VOLUME: u16 = 200;
@@ -151,11 +170,14 @@ impl VolumeBackend {
         }
     }
 
-    fn default_device(self) -> &'static str {
-        match self {
-            Self::Wpctl => DEFAULT_DEVICE_WPCTL,
-            Self::Pactl => DEFAULT_DEVICE_PACTL,
-            Self::Unavailable => DEFAULT_DEVICE_WPCTL,
+    fn default_device(self, target: Target) -> &'static str {
+        match (self, target) {
+            (Self::Wpctl, Target::Sink) => DEFAULT_DEVICE_WPCTL,
+            (Self::Pactl, Target::Sink) => DEFAULT_DEVICE_PACTL,
+            (Self::Unavailable, Target::Sink) => DEFAULT_DEVICE_WPCTL,
+            (Self::Wpctl, Target::Source) => DEFAULT_SOURCE_WPCTL,
+            (Self::Pactl, Target::Source) => DEFAULT_SOURCE_PACTL,
+            (Self::Unavailable, Target::Source) => DEFAULT_SOURCE_WPCTL,
         }
     }
 
@@ -180,10 +202,15 @@ enum ClickAction {
     SetVolume(u16),
 }
 
+const DEFAULT_SCROLL_STEP: u16 = 5;
+
 pub struct VolumeModule {
     backend: VolumeBackend,
+    target: Target,
     device: String,
     slider_width: usize,
+    show_slider: bool,
+    scroll_step: u16,
     max_volume: u16,
     volume_percent: u16,
     muted: bool,
@@ -209,18 +236,27 @@ impl VolumeModule {
         config: &ModuleConfig,
     ) -> Self {
         let backend = detect_backend(backend.as_deref());
+        let target = Target::from_config(config.target.as_deref());
         let slider_width = slider_width
             .unwrap_or(DEFAULT_SLIDER_WIDTH as u32)
             .clamp(1, 64) as usize;
         let max_volume = max_volume
             .unwrap_or(DEFAULT_MAX_VOLUME)
             .clamp(1, MAX_ALLOWED_VOLUME);
-        let device = device.unwrap_or_else(|| backend.default_device().to_string());
+        let device = device.unwrap_or_else(|| backend.default_device(target).to_string());
+        let show_slider = config.show_slider.unwrap_or(true);
+        let scroll_step = config
+            .scroll_step
+            .unwrap_or(DEFAULT_SCROLL_STEP)
+            .clamp(1, 100);
 
         Self {
             backend,
+            target,
             device,
             slider_width,
+            show_slider,
+            scroll_step,
             max_volume,
             volume_percent: 0,
             muted: false,
@@ -233,6 +269,13 @@ impl VolumeModule {
             glyphs,
             style: VolumeStyle::from_config(config),
         }
+    }
+
+    /// Compute the new percent after a wheel tick. `delta > 0` raises volume.
+    fn nudged_percent(&self, delta: i32) -> u16 {
+        let cur = self.volume_percent as i32;
+        let stepped = cur + delta * self.scroll_step as i32;
+        stepped.clamp(0, self.max_volume as i32) as u16
     }
 
     fn icon_text(&self) -> &str {
@@ -296,7 +339,7 @@ impl VolumeModule {
 
         let result = match self.backend {
             VolumeBackend::Wpctl => read_wpctl_state(&self.device),
-            VolumeBackend::Pactl => read_pactl_state(&self.device),
+            VolumeBackend::Pactl => read_pactl_state(&self.device, self.target),
             VolumeBackend::Unavailable => {
                 Err("No supported audio backend found in PATH; install wpctl or pactl".to_string())
             }
@@ -338,17 +381,21 @@ impl VolumeModule {
             return;
         }
 
-        let target = percent.min(self.max_volume);
+        let target_pct = percent.min(self.max_volume);
+        let (pa_set_vol, pa_set_mute) = match self.target {
+            Target::Sink => ("set-sink-volume", "set-sink-mute"),
+            Target::Source => ("set-source-volume", "set-source-mute"),
+        };
         let result = match self.backend {
             VolumeBackend::Wpctl => {
-                let level = format!("{:.2}", target as f64 / 100.0);
+                let level = format!("{:.2}", target_pct as f64 / 100.0);
                 run_command("wpctl", &["set-volume", &self.device, &level])
                     .and_then(|_| run_command("wpctl", &["set-mute", &self.device, "0"]))
             }
             VolumeBackend::Pactl => {
-                let level = format!("{target}%");
-                run_command("pactl", &["set-sink-volume", &self.device, &level])
-                    .and_then(|_| run_command("pactl", &["set-sink-mute", &self.device, "no"]))
+                let level = format!("{target_pct}%");
+                run_command("pactl", &[pa_set_vol, &self.device, &level])
+                    .and_then(|_| run_command("pactl", &[pa_set_mute, &self.device, "no"]))
             }
             VolumeBackend::Unavailable => Ok(String::new()),
         };
@@ -372,11 +419,13 @@ impl VolumeModule {
             return;
         }
 
+        let pa_set_mute = match self.target {
+            Target::Sink => "set-sink-mute",
+            Target::Source => "set-source-mute",
+        };
         let result = match self.backend {
             VolumeBackend::Wpctl => run_command("wpctl", &["set-mute", &self.device, "toggle"]),
-            VolumeBackend::Pactl => {
-                run_command("pactl", &["set-sink-mute", &self.device, "toggle"])
-            }
+            VolumeBackend::Pactl => run_command("pactl", &[pa_set_mute, &self.device, "toggle"]),
             VolumeBackend::Unavailable => Ok(String::new()),
         };
 
@@ -408,6 +457,11 @@ impl VolumeModule {
         let rel_x = event.x - self.chrome.padding.0;
         if !(0.0..content_width).contains(&rel_x) {
             return None;
+        }
+
+        // Compact form (no slider): whole module is a mute toggle.
+        if !self.show_slider {
+            return Some(ClickAction::ToggleMute);
         }
 
         let char_width = content_width / self.total_content_chars() as f64;
@@ -465,27 +519,44 @@ impl Module for VolumeModule {
             color: self.chrome.foreground.unwrap_or(Color::WHITE),
             ..TextStyle::default()
         };
-        let label_style = if self.muted {
-            TextStyle {
-                color: self.style.muted_color,
-                ..base_style.clone()
-            }
-        } else {
-            base_style.clone()
+        let muted_style = TextStyle {
+            color: self.style.muted_color,
+            ..base_style.clone()
         };
-        let percent_style = if self.muted {
-            TextStyle {
-                color: self.style.muted_color,
-                ..base_style.clone()
-            }
-        } else {
-            base_style.clone()
-        };
+        let label_style = if self.muted { muted_style.clone() } else { base_style.clone() };
+        let percent_style = if self.muted { muted_style.clone() } else { base_style.clone() };
+
+        let icon_slot = self.icon_slot();
+        let icon_gap = self.icon_gap();
+        let percent_text = self.percent_text();
+
+        if !self.show_slider {
+            // Compact form: `<icon> <pct>%` — matches waybar's pulseaudio
+            // visuals (no progress bar).
+            let full_text = format!("{icon_slot}{icon_gap}{percent_text}");
+            return self.chrome.apply(ModuleView {
+                text: full_text,
+                text_segments: vec![
+                    TextSegment {
+                        text: icon_slot,
+                        style: label_style,
+                    },
+                    TextSegment {
+                        text: icon_gap,
+                        style: base_style.clone(),
+                    },
+                    TextSegment {
+                        text: percent_text,
+                        style: percent_style,
+                    },
+                ],
+                style: base_style,
+                ..Default::default()
+            });
+        }
+
         let filled_style = if self.muted {
-            TextStyle {
-                color: self.style.muted_color,
-                ..base_style.clone()
-            }
+            muted_style.clone()
         } else {
             TextStyle {
                 color: self.style.filled_color,
@@ -499,9 +570,6 @@ impl Module for VolumeModule {
 
         let filled = self.slider_fill();
         let empty = self.slider_width.saturating_sub(filled);
-        let icon_slot = self.icon_slot();
-        let icon_gap = self.icon_gap();
-        let percent_text = self.percent_text();
         let left = self.glyphs.left.clone();
         let filled_text = self.glyphs.filled.repeat(filled);
         let empty_text = self.glyphs.empty.repeat(empty);
@@ -547,14 +615,25 @@ impl Module for VolumeModule {
     }
 
     fn click(&mut self, event: ClickEvent) {
-        if event.button != MouseButton::Left {
-            return;
-        }
-
-        match self.action_for_click(&event) {
-            Some(ClickAction::ToggleMute) => self.toggle_mute(),
-            Some(ClickAction::SetVolume(percent)) => self.set_volume_percent(percent),
-            None => {}
+        match event.button {
+            MouseButton::Left => match self.action_for_click(&event) {
+                Some(ClickAction::ToggleMute) => self.toggle_mute(),
+                Some(ClickAction::SetVolume(percent)) => self.set_volume_percent(percent),
+                None => {}
+            },
+            // Wheel up/down anywhere on the module nudges the volume — matches
+            // waybar's `on-scroll-up` / `on-scroll-down` behaviour.
+            MouseButton::ScrollUp => {
+                if self.state_known {
+                    self.set_volume_percent(self.nudged_percent(1));
+                }
+            }
+            MouseButton::ScrollDown => {
+                if self.state_known {
+                    self.set_volume_percent(self.nudged_percent(-1));
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -617,9 +696,13 @@ fn read_wpctl_state(device: &str) -> Result<VolumeState, String> {
     parse_wpctl_output(&output).ok_or_else(|| format!("Unexpected wpctl output: {output}"))
 }
 
-fn read_pactl_state(device: &str) -> Result<VolumeState, String> {
-    let volume_output = run_command("pactl", &["get-sink-volume", device])?;
-    let mute_output = run_command("pactl", &["get-sink-mute", device])?;
+fn read_pactl_state(device: &str, target: Target) -> Result<VolumeState, String> {
+    let (volume_cmd, mute_cmd) = match target {
+        Target::Sink => ("get-sink-volume", "get-sink-mute"),
+        Target::Source => ("get-source-volume", "get-source-mute"),
+    };
+    let volume_output = run_command("pactl", &[volume_cmd, device])?;
+    let mute_output = run_command("pactl", &[mute_cmd, device])?;
     let volume_percent = parse_pactl_volume_output(&volume_output)
         .ok_or_else(|| format!("Unexpected pactl volume output: {volume_output}"))?;
     let muted = parse_pactl_mute_output(&mute_output)

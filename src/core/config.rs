@@ -29,6 +29,10 @@ pub struct BarConfig {
     #[serde(default = "default_font_size")]
     pub font_size: f64,
 
+    /// Render all bar/module text at Pango bold weight.
+    #[serde(default)]
+    pub bold: bool,
+
     #[serde(default)]
     pub text_y_offset: f64,
 
@@ -41,10 +45,6 @@ pub struct BarConfig {
     /// Position of the bar: "top" (default) or "bottom".
     #[serde(default = "default_position")]
     pub position: String,
-
-    /// Monitor name to display on (e.g. "HDMI-1"). Empty = primary/first.
-    #[serde(default)]
-    pub monitor: Option<String>,
 
     #[serde(default)]
     pub modules_left: Vec<String>,
@@ -95,6 +95,12 @@ pub struct BarConfig {
     /// set, are drawn on top of this within their slot.
     #[serde(default)]
     pub module_background: Option<String>,
+
+    /// How often (in milliseconds) modules are polled and the bar is redrawn.
+    /// Defaults to 200 ms (5 Hz). Lower values make the bar feel more
+    /// responsive; higher values reduce CPU usage.
+    #[serde(default)]
+    pub refresh_interval_ms: Option<u64>,
 }
 
 fn default_position() -> String {
@@ -105,6 +111,11 @@ impl BarConfig {
     /// Returns true if the bar is positioned at the bottom.
     pub fn is_bottom(&self) -> bool {
         self.position.eq_ignore_ascii_case("bottom")
+    }
+
+    /// How often modules are polled and the bar redrawn.
+    pub fn refresh_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.refresh_interval_ms.unwrap_or(200))
     }
 }
 
@@ -168,6 +179,22 @@ pub struct ModuleConfig {
     /// with an ellipsis. Currently used by the `window` module.
     #[serde(default)]
     pub max_length: Option<u32>,
+
+    /// Whether the volume/brightness modules render a slider next to their
+    /// percentage. When false, output is just `{icon} {pct}%` — matching
+    /// waybar's pulseaudio/backlight visuals.
+    #[serde(default)]
+    pub show_slider: Option<bool>,
+
+    /// Percentage step applied by one wheel tick on volume/brightness modules.
+    /// Defaults to 5 (matching waybar's `scroll-step`).
+    #[serde(default)]
+    pub scroll_step: Option<u16>,
+
+    /// For the volume module: "sink" (default — speakers) or "source"
+    /// (microphone). Mirrors waybar's `pulseaudio#microphone`.
+    #[serde(default)]
+    pub target: Option<String>,
 
     /// Optional label shown when a module has nothing to display
     /// (e.g. the `window` module when there is no focused window).
@@ -263,6 +290,31 @@ pub struct ModuleConfig {
 
     #[serde(default)]
     pub glyph_empty: Option<String>,
+
+    /// Background polling interval in milliseconds for modules that poll on a
+    /// timer (e.g. bluetooth). Defaults vary per module (bluetooth: 2000 ms).
+    #[serde(default)]
+    pub poll_interval_ms: Option<u64>,
+
+    /// Playback module: icon for the "previous track" button.
+    #[serde(default)]
+    pub icon_previous: Option<String>,
+
+    /// Playback module: icon for the "stop" button.
+    #[serde(default)]
+    pub icon_stop: Option<String>,
+
+    /// Playback module: icon shown when media is playing (pause action).
+    #[serde(default)]
+    pub icon_play: Option<String>,
+
+    /// Playback module: icon shown when media is paused/stopped (play action).
+    #[serde(default)]
+    pub icon_pause: Option<String>,
+
+    /// Playback module: icon for the "next track" button.
+    #[serde(default)]
+    pub icon_next: Option<String>,
 }
 
 fn default_height() -> u32 {

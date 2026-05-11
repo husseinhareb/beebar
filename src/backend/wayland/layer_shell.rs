@@ -96,6 +96,7 @@ pub fn run_layer_shell(bar: &mut Bar) {
     let height = bar.height;
     let width = bar.width;
     let bottom = bar.bottom;
+    let update_interval = bar.refresh_interval;
 
     let layer_surface =
         layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("beebar"), None);
@@ -163,8 +164,8 @@ pub fn run_layer_shell(bar: &mut Bar) {
         .expect("initial roundtrip failed");
 
     // Poll-based event loop: poll the Wayland fd with a short timeout so
-    // workspace updates feel immediate without busy-spinning the renderer.
-    let update_interval = std::time::Duration::from_secs(1);
+    // workspace + window-title updates feel immediate without busy-spinning.
+    // The update interval is controlled by the bar's refresh_interval_ms config field.
     let mut next_update = std::time::Instant::now();
 
     loop {
@@ -757,63 +758,96 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                     0x112 => MouseButton::Middle, // BTN_MIDDLE
                     n => MouseButton::Other(n),
                 };
-                let (px, py) = state.pointer_pos;
 
-                if state.pointer_focus == PointerFocus::Popup {
-                    if let Some((owner, item_idx)) = state.popup.as_ref().and_then(|popup| {
-                        popup
-                            .layout
-                            .hit_test(&popup.menu.items, px, py)
-                            .map(|item_idx| (popup.owner.clone(), item_idx))
-                    }) {
-                        state.bar.handle_popup_click(&owner, item_idx, mb);
-                    } else {
-                        state.bar.dismiss_all_popups();
-                    }
-                    state.bar.update_all();
-                    sync_popup_surface(state);
-                    draw_frame(state);
-                    conn.flush().ok();
+                dispatch_pointer_event(state, conn, mb);
+            }
+            wl_pointer::Event::Axis { axis, value, .. } => {
+                if !state.configured {
                     return;
                 }
-
-                if state.pointer_focus == PointerFocus::Catcher {
-                    state.bar.dismiss_all_popups();
-                    state.bar.update_all();
-                    sync_popup_surface(state);
-                    draw_frame(state);
-                    conn.flush().ok();
+                // Only react to vertical scroll. wl_pointer's value is in
+                // surface-local units: positive = wheel-down, negative = wheel-up.
+                if !matches!(axis, WEnum::Value(wl_pointer::Axis::VerticalScroll)) {
                     return;
                 }
-
-                if state.popup.is_some() {
-                    state.bar.dismiss_all_popups();
+                if value == 0.0 {
+                    return;
                 }
-
-                let click = ClickEvent {
-                    x: px,
-                    bar_x: px,
-                    screen_x: px,
-                    module_width: 0.0,
-                    y: py,
-                    bar_y: py,
-                    screen_y: py,
-                    button: mb,
+                let mb = if value > 0.0 {
+                    MouseButton::ScrollDown
+                } else {
+                    MouseButton::ScrollUp
                 };
-
-                // Compute layout regions using immutable borrows of bar + renderer.
-                let width = state.width;
-                let groups = state.bar.compute_groups(width as f64, &state.renderer);
-                let regions = BarLayout::flatten_modules(&groups);
-                state.bar.handle_click(&regions, &click);
-                state.bar.update_all();
-                sync_popup_surface(state);
-                draw_frame(state);
-                conn.flush().ok();
+                // Don't forward wheel events to popup items — they're not
+                // expected to react to scroll, and we don't want a wheel tick
+                // to dismiss/activate a menu entry.
+                if state.pointer_focus != PointerFocus::Bar {
+                    return;
+                }
+                dispatch_pointer_event(state, conn, mb);
             }
             _ => {}
         }
     }
+}
+
+/// Shared dispatch path for pointer events that should travel through the
+/// click pipeline: synthesises a `ClickEvent` at the current pointer position
+/// with the given button, routes it to the right surface (popup / catcher /
+/// bar), then redraws.
+fn dispatch_pointer_event(state: &mut WaylandState, conn: &Connection, mb: MouseButton) {
+    let (px, py) = state.pointer_pos;
+
+    if state.pointer_focus == PointerFocus::Popup {
+        if let Some((owner, item_idx)) = state.popup.as_ref().and_then(|popup| {
+            popup
+                .layout
+                .hit_test(&popup.menu.items, px, py)
+                .map(|item_idx| (popup.owner.clone(), item_idx))
+        }) {
+            state.bar.handle_popup_click(&owner, item_idx, mb);
+        } else {
+            state.bar.dismiss_all_popups();
+        }
+        state.bar.update_all();
+        sync_popup_surface(state);
+        draw_frame(state);
+        conn.flush().ok();
+        return;
+    }
+
+    if state.pointer_focus == PointerFocus::Catcher {
+        state.bar.dismiss_all_popups();
+        state.bar.update_all();
+        sync_popup_surface(state);
+        draw_frame(state);
+        conn.flush().ok();
+        return;
+    }
+
+    if state.popup.is_some() {
+        state.bar.dismiss_all_popups();
+    }
+
+    let click = ClickEvent {
+        x: px,
+        bar_x: px,
+        screen_x: px,
+        module_width: 0.0,
+        y: py,
+        bar_y: py,
+        screen_y: py,
+        button: mb,
+    };
+
+    let width = state.width;
+    let groups = state.bar.compute_groups(width as f64, &state.renderer);
+    let regions = BarLayout::flatten_modules(&groups);
+    state.bar.handle_click(&regions, &click);
+    state.bar.update_all();
+    sync_popup_surface(state);
+    draw_frame(state);
+    conn.flush().ok();
 }
 
 delegate_compositor!(WaylandState);

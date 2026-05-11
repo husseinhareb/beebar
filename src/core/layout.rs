@@ -122,11 +122,6 @@ impl BarLayout {
             .flat_map(|g| g.modules.iter().cloned())
             .collect()
     }
-
-    /// True when the bar has no groups defined at all.
-    pub fn is_empty(&self) -> bool {
-        self.left.is_empty() && self.center.is_empty() && self.right.is_empty()
-    }
 }
 
 fn build_group_region(

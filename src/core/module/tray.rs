@@ -1165,7 +1165,8 @@ impl Module for TrayModule {
                     }
                 });
             }
-            MouseButton::Other(_) => {}
+            // Tray items have no meaningful response to wheel events; ignore.
+            MouseButton::ScrollUp | MouseButton::ScrollDown | MouseButton::Other(_) => {}
         }
     }
 

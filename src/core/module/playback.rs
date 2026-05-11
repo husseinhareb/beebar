@@ -19,11 +19,11 @@ const DEFAULT_UNAVAILABLE_ICON: &str = "󰎈";
 const DEFAULT_FORMAT: &str = "{icon} {track} {buttons}";
 const NO_MEDIA_TEXT: &str = "no media";
 const UNAVAILABLE_TEXT: &str = "unavailable";
-const PREVIOUS_ICON: &str = "󰒮";
-const STOP_ICON: &str = "󰓛";
-const PLAY_ICON: &str = "󰐊";
-const PAUSE_ICON: &str = "󰏤";
-const NEXT_ICON: &str = "󰒭";
+const DEFAULT_PREVIOUS_ICON: &str = "󰒮";
+const DEFAULT_STOP_ICON: &str = "󰓛";
+const DEFAULT_PLAY_ICON: &str = "󰐊";
+const DEFAULT_PAUSE_ICON: &str = "󰏤";
+const DEFAULT_NEXT_ICON: &str = "󰒭";
 const BUTTON_GAP_CHARS: usize = 1;
 
 #[proxy(
@@ -161,26 +161,60 @@ enum ControlAction {
     Next,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PlaybackButtons {
-    previous: &'static str,
-    stop: &'static str,
-    toggle: &'static str,
-    next: &'static str,
+    previous: String,
+    stop: String,
+    toggle: String,
+    next: String,
+}
+
+/// Configurable icons for the playback control buttons.
+#[derive(Debug, Clone)]
+pub struct PlaybackButtonIcons {
+    pub previous: String,
+    pub stop: String,
+    pub play: String,
+    pub pause: String,
+    pub next: String,
+}
+
+impl Default for PlaybackButtonIcons {
+    fn default() -> Self {
+        Self {
+            previous: DEFAULT_PREVIOUS_ICON.to_string(),
+            stop: DEFAULT_STOP_ICON.to_string(),
+            play: DEFAULT_PLAY_ICON.to_string(),
+            pause: DEFAULT_PAUSE_ICON.to_string(),
+            next: DEFAULT_NEXT_ICON.to_string(),
+        }
+    }
+}
+
+impl PlaybackButtonIcons {
+    pub fn from_config(config: &crate::core::config::ModuleConfig) -> Self {
+        let mut icons = Self::default();
+        if let Some(v) = &config.icon_previous { icons.previous = v.clone(); }
+        if let Some(v) = &config.icon_stop     { icons.stop     = v.clone(); }
+        if let Some(v) = &config.icon_play     { icons.play     = v.clone(); }
+        if let Some(v) = &config.icon_pause    { icons.pause    = v.clone(); }
+        if let Some(v) = &config.icon_next     { icons.next     = v.clone(); }
+        icons
+    }
 }
 
 impl PlaybackButtons {
-    fn from_status(status: PlaybackStatus) -> Self {
+    fn from_status_with_icons(status: PlaybackStatus, icons: &PlaybackButtonIcons) -> Self {
         Self {
-            previous: PREVIOUS_ICON,
-            stop: STOP_ICON,
+            previous: icons.previous.clone(),
+            stop: icons.stop.clone(),
             toggle: match status {
-                PlaybackStatus::Playing => PAUSE_ICON,
+                PlaybackStatus::Playing => icons.pause.clone(),
                 PlaybackStatus::Paused | PlaybackStatus::Stopped | PlaybackStatus::Unknown => {
-                    PLAY_ICON
+                    icons.play.clone()
                 }
             },
-            next: NEXT_ICON,
+            next: icons.next.clone(),
         }
     }
 
@@ -191,36 +225,36 @@ impl PlaybackButtons {
         )
     }
 
-    fn total_chars(self) -> usize {
-        char_len(self.previous)
+    fn total_chars(&self) -> usize {
+        char_len(&self.previous)
             + BUTTON_GAP_CHARS
-            + char_len(self.stop)
+            + char_len(&self.stop)
             + BUTTON_GAP_CHARS
-            + char_len(self.toggle)
+            + char_len(&self.toggle)
             + BUTTON_GAP_CHARS
-            + char_len(self.next)
+            + char_len(&self.next)
     }
 
-    fn action_for_char_offset(self, offset: usize) -> Option<ControlAction> {
-        let previous_end = char_len(self.previous);
+    fn action_for_char_offset(&self, offset: usize) -> Option<ControlAction> {
+        let previous_end = char_len(&self.previous);
         if offset < previous_end {
             return Some(ControlAction::Previous);
         }
 
         let stop_start = previous_end + BUTTON_GAP_CHARS;
-        let stop_end = stop_start + char_len(self.stop);
+        let stop_end = stop_start + char_len(&self.stop);
         if (stop_start..stop_end).contains(&offset) {
             return Some(ControlAction::Stop);
         }
 
         let toggle_start = stop_end + BUTTON_GAP_CHARS;
-        let toggle_end = toggle_start + char_len(self.toggle);
+        let toggle_end = toggle_start + char_len(&self.toggle);
         if (toggle_start..toggle_end).contains(&offset) {
             return Some(ControlAction::TogglePlayback);
         }
 
         let next_start = toggle_end + BUTTON_GAP_CHARS;
-        let next_end = next_start + char_len(self.next);
+        let next_end = next_start + char_len(&self.next);
         if (next_start..next_end).contains(&offset) {
             return Some(ControlAction::Next);
         }
@@ -240,7 +274,7 @@ struct RenderTokens {
     buttons: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ButtonLayout {
     prefix_chars: usize,
     buttons: PlaybackButtons,
@@ -253,6 +287,7 @@ pub struct PlaybackModule {
     format: String,
     icon: String,
     unavailable_icon: String,
+    button_icons: PlaybackButtonIcons,
     logged_refresh_error: bool,
 }
 
@@ -262,6 +297,7 @@ impl PlaybackModule {
         icon: Option<String>,
         unavailable_icon: Option<String>,
         chrome: ModuleChrome,
+        button_icons: PlaybackButtonIcons,
     ) -> Self {
         Self {
             connection: None,
@@ -271,6 +307,7 @@ impl PlaybackModule {
             icon: normalize_optional_string(icon).unwrap_or_else(|| DEFAULT_ICON.to_string()),
             unavailable_icon: normalize_optional_string(unavailable_icon)
                 .unwrap_or_else(|| DEFAULT_UNAVAILABLE_ICON.to_string()),
+            button_icons,
             logged_refresh_error: false,
         }
     }
@@ -297,7 +334,7 @@ impl PlaybackModule {
                 player: player.player_name.clone(),
                 status: player.status.label().to_string(),
                 buttons: if player.has_visible_controls() {
-                    PlaybackButtons::from_status(player.status).text()
+                    PlaybackButtons::from_status_with_icons(player.status, &self.button_icons).text()
                 } else {
                     String::new()
                 },
@@ -332,7 +369,7 @@ impl PlaybackModule {
             return None;
         };
         let (before_buttons, _) = self.format.split_once("{buttons}")?;
-        let buttons = PlaybackButtons::from_status(player.status);
+        let buttons = PlaybackButtons::from_status_with_icons(player.status, &self.button_icons);
         let tokens = self.render_tokens();
         if tokens.buttons.is_empty() {
             return None;
@@ -684,7 +721,7 @@ mod tests {
     }
 
     fn module_with_player(format: Option<String>) -> PlaybackModule {
-        let mut module = PlaybackModule::new(format, None, None, default_chrome());
+        let mut module = PlaybackModule::new(format, None, None, default_chrome(), PlaybackButtonIcons::default());
         module.state = PlaybackViewState::Player(player_state());
         module
     }
@@ -708,10 +745,10 @@ mod tests {
 
     fn button_click_x(module: &PlaybackModule, action: ControlAction) -> f64 {
         let layout = module.button_layout().expect("buttons should be rendered");
-        let previous_chars = char_len(layout.buttons.previous);
-        let stop_chars = char_len(layout.buttons.stop);
-        let toggle_chars = char_len(layout.buttons.toggle);
-        let next_chars = char_len(layout.buttons.next);
+        let previous_chars = char_len(&layout.buttons.previous);
+        let stop_chars = char_len(&layout.buttons.stop);
+        let toggle_chars = char_len(&layout.buttons.toggle);
+        let next_chars = char_len(&layout.buttons.next);
 
         let offset = match action {
             ControlAction::Previous => layout.prefix_chars as f64 + previous_chars as f64 / 2.0,
@@ -753,7 +790,7 @@ mod tests {
 
     #[test]
     fn uses_configured_icon() {
-        let mut module = PlaybackModule::new(None, Some("NOW".to_string()), None, default_chrome());
+        let mut module = PlaybackModule::new(None, Some("NOW".to_string()), None, default_chrome(), PlaybackButtonIcons::default());
         module.state = PlaybackViewState::Player(player_state());
 
         assert!(module.view().text.starts_with("NOW "));
@@ -775,7 +812,7 @@ mod tests {
 
     #[test]
     fn strips_button_gap_when_buttons_are_absent() {
-        let module = PlaybackModule::new(None, None, None, default_chrome());
+        let module = PlaybackModule::new(None, None, None, default_chrome(), PlaybackButtonIcons::default());
 
         assert_eq!(module.view().text, "󰎈 no media");
     }

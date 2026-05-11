@@ -22,6 +22,9 @@ pub struct TextStyle {
     pub font_family: String,
     pub font_size: f64,
     pub color: Color,
+    /// Render at Pango Weight::Bold. Defaults to false; modules inherit the
+    /// bar's `bold` setting via `Bar::apply_text_style`.
+    pub bold: bool,
 }
 
 impl Default for TextStyle {
@@ -30,6 +33,7 @@ impl Default for TextStyle {
             font_family: "monospace".to_string(),
             font_size: 14.0,
             color: Color::WHITE,
+            bold: false,
         }
     }
 }
