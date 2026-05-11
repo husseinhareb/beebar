@@ -14,7 +14,7 @@ use crate::core::module::cpu::CpuModule;
 use crate::core::module::custom::CustomModule;
 use crate::core::module::memory::MemoryModule;
 use crate::core::module::network::NetworkModule;
-use crate::core::module::playback::PlaybackModule;
+use crate::core::module::playback::{PlaybackButtonIcons, PlaybackModule};
 use crate::core::module::temperature::TemperatureIcons;
 use crate::core::module::temperature::TemperatureModule;
 use crate::core::module::tray::TrayModule;
@@ -24,6 +24,7 @@ use crate::core::module::window::WindowModule;
 use crate::core::module::workspaces::WorkspacesModule;
 use crate::renderer::primitives::TextStyle;
 use std::collections::HashSet;
+use std::time::Duration;
 
 fn build_module(
     name: &str,
@@ -58,6 +59,7 @@ fn build_module(
             mcfg.icon.clone(),
             mcfg.icon_unavailable.clone(),
             chrome,
+            PlaybackButtonIcons::from_config(mcfg),
         ))),
         "battery" => Some(Box::new(BatteryModule::new(
             BatteryIcons::from_config(mcfg),
@@ -112,6 +114,7 @@ fn build_module(
             mcfg.icon_off.clone(),
             mcfg.icon_no_controller.clone(),
             chrome,
+            Duration::from_millis(mcfg.poll_interval_ms.unwrap_or(2000)),
         ))),
         "volume" => Some(Box::new(VolumeModule::new(
             mcfg.backend.clone(),
@@ -171,7 +174,7 @@ fn add_grouped_modules(
 
 /// Build a `Bar` from the loaded configuration.
 pub fn build_bar(name: &str, bar_config: &BarConfig, config: &Config) -> Bar {
-    let mut bar = Bar::new(1920, bar_config.height);
+    let mut bar = Bar::new(0, bar_config.height);
     bar.name = name.to_string();
     bar.bottom = bar_config.is_bottom();
     bar.text_y_offset = bar_config.text_y_offset;
@@ -184,10 +187,12 @@ pub fn build_bar(name: &str, bar_config: &BarConfig, config: &Config) -> Bar {
     bar.group_spacing = bar_config.group_spacing.max(0.0);
     bar.corner_radius = bar_config.corner_radius.max(0.0);
     bar.group_background = bar_config.resolved_module_background();
+    bar.refresh_interval = bar_config.refresh_interval();
     bar.text_style = TextStyle {
         color: bar_config.resolved_foreground_color(),
         font_family: bar_config.resolved_font_family(),
         font_size: bar_config.resolved_font_size(),
+        bold: bar_config.bold,
         ..TextStyle::default()
     };
 

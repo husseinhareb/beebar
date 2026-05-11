@@ -189,7 +189,7 @@ pub fn run_x11(bar: &mut Bar) {
 
     let mut renderer = CairoRenderer::new(width, height);
     let mut popup: Option<PopupWindow> = None;
-    let update_interval = Duration::from_secs(1);
+    let update_interval = bar.refresh_interval;
     let idle_sleep = Duration::from_millis(16);
     let mut next_update = Instant::now();
     let mut needs_redraw = true;
@@ -202,10 +202,14 @@ pub fn run_x11(bar: &mut Bar) {
                 }
                 Event::ButtonPress(ev) => {
                     use crate::core::event::{ClickEvent, MouseButton};
+                    // X11 reports scroll wheel motion as button presses on
+                    // detail 4 (up) and 5 (down).
                     let button = match ev.detail {
                         1 => MouseButton::Left,
                         2 => MouseButton::Middle,
                         3 => MouseButton::Right,
+                        4 => MouseButton::ScrollUp,
+                        5 => MouseButton::ScrollDown,
                         n => MouseButton::Other(n as u32),
                     };
 

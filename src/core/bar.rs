@@ -32,6 +32,8 @@ pub struct Bar {
     pub corner_radius: f64,
     /// Default fill color for pill groups.
     pub group_background: Option<Color>,
+    /// How often modules are polled and the bar redrawn.
+    pub refresh_interval: std::time::Duration,
 }
 
 impl Bar {
@@ -53,6 +55,7 @@ impl Bar {
             group_spacing: 0.0,
             corner_radius: 0.0,
             group_background: None,
+            refresh_interval: std::time::Duration::from_millis(200),
         }
     }
 
@@ -94,6 +97,7 @@ impl Bar {
     pub fn apply_text_style(&self, mut view: ModuleView) -> ModuleView {
         let font_family = self.text_style.font_family.clone();
         let font_size = self.text_style.font_size;
+        let bold = self.text_style.bold;
         let default_color = if view.style.color == Color::WHITE {
             self.text_style.color
         } else {
@@ -103,10 +107,14 @@ impl Bar {
         view.style.font_family = font_family.clone();
         view.style.font_size = font_size;
         view.style.color = default_color;
+        // Modules don't opt-out of bold, so the bar's setting always wins;
+        // any future per-module override can be plumbed via ModuleChrome.
+        view.style.bold = bold;
 
         for segment in &mut view.text_segments {
             segment.style.font_family = font_family.clone();
             segment.style.font_size = font_size;
+            segment.style.bold = bold;
             if segment.style.color == Color::WHITE {
                 segment.style.color = default_color;
             }
@@ -328,6 +336,7 @@ mod tests {
             font_family: "JetBrains Mono".to_string(),
             font_size: 16.0,
             color: Color::rgb(0.7, 0.7, 0.7),
+            bold: false,
         };
 
         let view = ModuleView {
@@ -339,6 +348,7 @@ mod tests {
                         font_family: "serif".to_string(),
                         font_size: 10.0,
                         color: Color::rgb(0.8, 0.4, 0.2),
+                        bold: false,
                     },
                 },
                 TextSegment {
@@ -350,6 +360,7 @@ mod tests {
                 font_family: "sans".to_string(),
                 font_size: 11.0,
                 color: Color::rgb(0.2, 0.4, 0.8),
+                bold: false,
             },
             ..Default::default()
         };

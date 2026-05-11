@@ -1,9 +1,13 @@
-/// Which mouse button triggered a click.
+/// Which mouse button triggered a click. Wheel motion is folded into the
+/// same enum so it flows through the existing click pipeline — modules opt
+/// into wheel handling by matching `ScrollUp` / `ScrollDown`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
     Right,
     Middle,
+    ScrollUp,
+    ScrollDown,
     Other(u32),
 }
 

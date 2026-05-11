@@ -37,14 +37,6 @@ pub struct PopupMenuItem {
 }
 
 impl PopupMenuItem {
-    pub fn action(label: impl Into<String>, enabled: bool) -> Self {
-        Self {
-            label: label.into(),
-            enabled,
-            kind: PopupItemKind::Action,
-        }
-    }
-
     pub fn is_selectable(&self) -> bool {
         !matches!(self.kind, PopupItemKind::Separator)
     }

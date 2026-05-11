@@ -148,13 +148,6 @@ impl BrightnessBackend {
         }
     }
 
-    fn binary(self) -> Option<&'static str> {
-        match self {
-            Self::Brightnessctl => Some("brightnessctl"),
-            Self::Sysfs | Self::Unavailable => None,
-        }
-    }
-
     fn display_name(self) -> &'static str {
         match self {
             Self::Sysfs => "sysfs",
@@ -174,10 +167,14 @@ enum ClickAction {
     SetBrightness(u16),
 }
 
+const DEFAULT_SCROLL_STEP: u16 = 5;
+
 pub struct BrightnessModule {
     backend: BrightnessBackend,
     device: Option<String>,
     slider_width: usize,
+    show_slider: bool,
+    scroll_step: u16,
     max_brightness: u16,
     brightness_percent: u16,
     state_known: bool,
@@ -208,11 +205,18 @@ impl BrightnessModule {
         let max_brightness = max_brightness
             .unwrap_or(DEFAULT_MAX_BRIGHTNESS)
             .clamp(1, MAX_ALLOWED_BRIGHTNESS);
+        let show_slider = config.show_slider.unwrap_or(true);
+        let scroll_step = config
+            .scroll_step
+            .unwrap_or(DEFAULT_SCROLL_STEP)
+            .clamp(1, 100);
 
         Self {
             backend,
             device,
             slider_width,
+            show_slider,
+            scroll_step,
             max_brightness,
             brightness_percent: 0,
             state_known: false,
@@ -224,6 +228,13 @@ impl BrightnessModule {
             glyphs,
             style: BrightnessStyle::from_config(config),
         }
+    }
+
+    /// Compute the new percent after a wheel tick. `delta > 0` raises brightness.
+    fn nudged_percent(&self, delta: i32) -> u16 {
+        let cur = self.brightness_percent as i32;
+        let stepped = cur + delta * self.scroll_step as i32;
+        stepped.clamp(0, self.max_brightness as i32) as u16
     }
 
     fn icon_text(&self) -> &str {
@@ -369,6 +380,10 @@ impl BrightnessModule {
         if self.backend == BrightnessBackend::Unavailable {
             return None;
         }
+        // No slider visible → clicks aren't bound to anything.
+        if !self.show_slider {
+            return None;
+        }
 
         let content_width =
             (event.module_width - self.chrome.padding.0 - self.chrome.padding.1).max(0.0);
@@ -431,6 +446,36 @@ impl Module for BrightnessModule {
             color: self.chrome.foreground.unwrap_or(Color::WHITE),
             ..TextStyle::default()
         };
+
+        let icon_slot = self.icon_slot();
+        let icon_gap = self.icon_gap();
+        let percent_text = self.percent_text();
+
+        if !self.show_slider {
+            // Compact form: `<icon> <pct>%` — matches waybar's backlight
+            // visuals (no progress bar).
+            let full_text = format!("{icon_slot}{icon_gap}{percent_text}");
+            return self.chrome.apply(ModuleView {
+                text: full_text,
+                text_segments: vec![
+                    TextSegment {
+                        text: icon_slot,
+                        style: base_style.clone(),
+                    },
+                    TextSegment {
+                        text: icon_gap,
+                        style: base_style.clone(),
+                    },
+                    TextSegment {
+                        text: percent_text,
+                        style: base_style.clone(),
+                    },
+                ],
+                style: base_style,
+                ..Default::default()
+            });
+        }
+
         let filled_style = TextStyle {
             color: self.style.filled_color,
             ..base_style.clone()
@@ -442,9 +487,6 @@ impl Module for BrightnessModule {
 
         let filled = self.slider_fill();
         let empty = self.slider_width.saturating_sub(filled);
-        let icon_slot = self.icon_slot();
-        let icon_gap = self.icon_gap();
-        let percent_text = self.percent_text();
         let left = self.glyphs.left.clone();
         let filled_text = self.glyphs.filled.repeat(filled);
         let empty_text = self.glyphs.empty.repeat(empty);
@@ -490,13 +532,24 @@ impl Module for BrightnessModule {
     }
 
     fn click(&mut self, event: ClickEvent) {
-        if event.button != MouseButton::Left {
-            return;
-        }
-
-        match self.action_for_click(&event) {
-            Some(ClickAction::SetBrightness(percent)) => self.set_brightness_percent(percent),
-            None => {}
+        match event.button {
+            MouseButton::Left => match self.action_for_click(&event) {
+                Some(ClickAction::SetBrightness(percent)) => self.set_brightness_percent(percent),
+                None => {}
+            },
+            // Wheel anywhere on the module nudges brightness, matching
+            // waybar's `on-scroll-up` / `on-scroll-down`.
+            MouseButton::ScrollUp => {
+                if self.state_known {
+                    self.set_brightness_percent(self.nudged_percent(1));
+                }
+            }
+            MouseButton::ScrollDown => {
+                if self.state_known {
+                    self.set_brightness_percent(self.nudged_percent(-1));
+                }
+            }
+            _ => {}
         }
     }
 }

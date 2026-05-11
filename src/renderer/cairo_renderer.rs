@@ -1,9 +1,18 @@
 use cairo::{Context, Format, ImageSurface};
-use pango::FontDescription;
+use pango::{FontDescription, Weight};
 use pangocairo::functions as pangocairo;
 
 use super::color::Color;
 use super::primitives::{Point, Rect, Renderer, TextStyle};
+
+fn build_font_desc(style: &TextStyle) -> FontDescription {
+    let mut font_desc = FontDescription::from_string(&style.font_family);
+    font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
+    if style.bold {
+        font_desc.set_weight(Weight::Bold);
+    }
+    font_desc
+}
 
 /// Cairo + Pango based renderer. Draws to an in-memory image surface.
 pub struct CairoRenderer {
@@ -79,8 +88,7 @@ impl Renderer for CairoRenderer {
     fn draw_text(&mut self, pos: Point, text: &str, style: &TextStyle) -> f64 {
         let cr = self.cr.as_ref().expect("call begin() first");
         let layout = pangocairo::create_layout(cr);
-        let mut font_desc = FontDescription::from_string(&style.font_family);
-        font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
+        let font_desc = build_font_desc(style);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
 
@@ -104,8 +112,7 @@ impl Renderer for CairoRenderer {
             }
         };
         let layout = pangocairo::create_layout(cr);
-        let mut font_desc = FontDescription::from_string(&style.font_family);
-        font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
+        let font_desc = build_font_desc(style);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
         let (w, _) = layout.pixel_size();
@@ -123,8 +130,7 @@ impl Renderer for CairoRenderer {
             }
         };
         let layout = pangocairo::create_layout(cr);
-        let mut font_desc = FontDescription::from_string(&style.font_family);
-        font_desc.set_absolute_size(style.font_size * pango::SCALE as f64);
+        let font_desc = build_font_desc(style);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
         let (_, h) = layout.pixel_size();

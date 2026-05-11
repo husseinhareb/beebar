@@ -15,8 +15,6 @@ use zbus::zvariant::OwnedValue;
 use super::{Module, ModuleChrome, ModuleView};
 use crate::renderer::primitives::TextStyle;
 
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BluetoothState {
     /// bluez daemon not reachable / no adapter known.
@@ -48,6 +46,7 @@ impl BluetoothModule {
         icon_off: Option<String>,
         icon_no_controller: Option<String>,
         chrome: ModuleChrome,
+        poll_interval: Duration,
     ) -> Self {
         let state = Arc::new(Mutex::new(BluetoothState::NoController));
 
@@ -63,7 +62,7 @@ impl BluetoothModule {
         {
             let state_clone = state.clone();
             rt.spawn(async move {
-                run_poller(state_clone).await;
+                run_poller(state_clone, poll_interval).await;
             });
         }
 
@@ -108,7 +107,7 @@ impl Module for BluetoothModule {
     }
 }
 
-async fn run_poller(state: Arc<Mutex<BluetoothState>>) {
+async fn run_poller(state: Arc<Mutex<BluetoothState>>, poll_interval: Duration) {
     loop {
         let next = match poll_once().await {
             Ok(s) => s,
@@ -125,7 +124,7 @@ async fn run_poller(state: Arc<Mutex<BluetoothState>>) {
             }
         }
 
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
