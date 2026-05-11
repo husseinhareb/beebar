@@ -75,6 +75,8 @@ struct WaylandState {
     width: u32,
     height: u32,
     exit: bool,
+    /// Set by pointer-event handlers to request a redraw on the next loop tick.
+    needs_redraw: bool,
     /// Raw Wayland pointer object (kept alive to receive events).
     pointer: Option<wl_pointer::WlPointer>,
     /// Last known pointer position on our bar surface.
@@ -152,6 +154,7 @@ pub fn run_layer_shell(bar: &mut Bar) {
         width,
         height,
         exit: false,
+        needs_redraw: false,
         pointer: None,
         pointer_pos: (0.0, 0.0),
         pointer_focus: PointerFocus::None,
@@ -168,8 +171,11 @@ pub fn run_layer_shell(bar: &mut Bar) {
     // The update interval is controlled by the bar's refresh_interval_ms config field.
     let mut next_update = std::time::Instant::now();
 
-    loop {
-        conn.flush().expect("flush");
+    'main: loop {
+        if let Err(e) = conn.flush() {
+            log::error!("Wayland connection lost (flush): {e}");
+            break;
+        }
 
         // How long until the next scheduled module update?
         let now = std::time::Instant::now();
@@ -185,11 +191,21 @@ pub fn run_layer_shell(bar: &mut Bar) {
         // Poll the Wayland socket fd.
         let mut pollfd = libc::pollfd {
             fd: wayland_fd,
-            events: libc::POLLIN,
+            events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
             revents: 0,
         };
         // SAFETY: pollfd array is valid for the duration of this call.
         let poll_ret = unsafe { libc::poll(&mut pollfd as *mut libc::pollfd, 1, timeout_ms) };
+
+        // Detect compositor disconnect via HUP or error.
+        if poll_ret > 0
+            && pollfd.revents & (libc::POLLHUP | libc::POLLERR) != 0
+            && pollfd.revents & libc::POLLIN == 0
+        {
+            log::error!("Wayland compositor disconnected (poll HUP/ERR)");
+            drop(guard);
+            break;
+        }
 
         if poll_ret > 0 && pollfd.revents & libc::POLLIN != 0 {
             // Data available: read it into the event queue.
@@ -199,7 +215,10 @@ pub fn run_layer_shell(bar: &mut Bar) {
                     // EAGAIN: data disappeared between poll and read — safe to ignore.
                     Err(wayland_client::backend::WaylandError::Io(e))
                         if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(e) => panic!("failed to read Wayland events: {e}"),
+                    Err(e) => {
+                        log::error!("Wayland read failed: {e}");
+                        break 'main;
+                    }
                 }
             }
         } else {
@@ -208,18 +227,30 @@ pub fn run_layer_shell(bar: &mut Bar) {
         }
 
         // Dispatch all events that are now in the queue.
-        event_queue
-            .dispatch_pending(&mut state)
-            .expect("dispatch failed");
+        if let Err(e) = event_queue.dispatch_pending(&mut state) {
+            log::error!("Wayland dispatch failed: {e}");
+            break;
+        }
 
-        // Periodic module update + redraw.
+        // Periodic module update + redraw.  Also redraw immediately after
+        // pointer events (needs_redraw) so clicks feel responsive without
+        // waiting a full refresh interval.
         let now = std::time::Instant::now();
-        if state.configured && now >= next_update {
-            next_update = now + update_interval;
-            state.bar.update_all();
+        let timer_fired = state.configured && now >= next_update;
+        let redraw_now = timer_fired || state.needs_redraw;
+
+        if redraw_now {
+            if timer_fired {
+                next_update = now + update_interval;
+                state.bar.update_all();
+            }
+            state.needs_redraw = false;
             sync_popup_surface(&mut state);
             draw_frame(&mut state);
-            conn.flush().expect("flush after draw");
+            if let Err(e) = conn.flush() {
+                log::error!("Wayland connection lost (flush after draw): {e}");
+                break;
+            }
         }
 
         if state.exit {
@@ -759,7 +790,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                     n => MouseButton::Other(n),
                 };
 
-                dispatch_pointer_event(state, conn, mb);
+                dispatch_pointer_event(state, mb);
             }
             wl_pointer::Event::Axis { axis, value, .. } => {
                 if !state.configured {
@@ -784,7 +815,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 if state.pointer_focus != PointerFocus::Bar {
                     return;
                 }
-                dispatch_pointer_event(state, conn, mb);
+                dispatch_pointer_event(state, mb);
             }
             _ => {}
         }
@@ -794,8 +825,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
 /// Shared dispatch path for pointer events that should travel through the
 /// click pipeline: synthesises a `ClickEvent` at the current pointer position
 /// with the given button, routes it to the right surface (popup / catcher /
-/// bar), then redraws.
-fn dispatch_pointer_event(state: &mut WaylandState, conn: &Connection, mb: MouseButton) {
+/// bar), then requests a redraw on the next loop iteration.
+fn dispatch_pointer_event(state: &mut WaylandState, mb: MouseButton) {
     let (px, py) = state.pointer_pos;
 
     if state.pointer_focus == PointerFocus::Popup {
@@ -810,18 +841,14 @@ fn dispatch_pointer_event(state: &mut WaylandState, conn: &Connection, mb: Mouse
             state.bar.dismiss_all_popups();
         }
         state.bar.update_all();
-        sync_popup_surface(state);
-        draw_frame(state);
-        conn.flush().ok();
+        state.needs_redraw = true;
         return;
     }
 
     if state.pointer_focus == PointerFocus::Catcher {
         state.bar.dismiss_all_popups();
         state.bar.update_all();
-        sync_popup_surface(state);
-        draw_frame(state);
-        conn.flush().ok();
+        state.needs_redraw = true;
         return;
     }
 
@@ -844,10 +871,7 @@ fn dispatch_pointer_event(state: &mut WaylandState, conn: &Connection, mb: Mouse
     let groups = state.bar.compute_groups(width as f64, &state.renderer);
     let regions = BarLayout::flatten_modules(&groups);
     state.bar.handle_click(&regions, &click);
-    state.bar.update_all();
-    sync_popup_surface(state);
-    draw_frame(state);
-    conn.flush().ok();
+    state.needs_redraw = true;
 }
 
 delegate_compositor!(WaylandState);
