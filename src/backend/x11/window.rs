@@ -189,9 +189,12 @@ pub fn run_x11(bar: &mut Bar) {
 
     let mut renderer = CairoRenderer::new(width, height);
     let mut popup: Option<PopupWindow> = None;
-    let update_interval = bar.refresh_interval;
+    // Upper bound on time between ticks: even if no module is due, redraw
+    // this often so background-worker modules (tray, bluetooth, window-via-
+    // inotify) get their pushed state on screen.
+    let refresh_ceiling = bar.refresh_interval;
     let idle_sleep = Duration::from_millis(16);
-    let mut next_update = Instant::now();
+    let mut next_tick = Instant::now();
     let mut needs_redraw = true;
 
     loop {
@@ -282,10 +285,17 @@ pub fn run_x11(bar: &mut Bar) {
         }
 
         let now = Instant::now();
-        if now >= next_update {
-            next_update = now + update_interval;
-            bar.update_all();
+        if now >= next_tick {
+            let tick = bar.tick();
+            let ceiling = now + refresh_ceiling;
+            next_tick = match tick.next_due {
+                Some(due) => due.min(ceiling),
+                None => ceiling,
+            };
+            // Always redraw on the ceiling tick so background-worker state
+            // (tray icons, bluetooth, inotify-pushed window titles) shows up.
             needs_redraw = true;
+            let _ = tick.updated; // currently always-redraw; reserved for later
         }
 
         if needs_redraw {
@@ -319,7 +329,7 @@ pub fn run_x11(bar: &mut Bar) {
             needs_redraw = false;
         }
 
-        let sleep_for = next_update
+        let sleep_for = next_tick
             .saturating_duration_since(Instant::now())
             .min(idle_sleep);
         if !sleep_for.is_zero() {

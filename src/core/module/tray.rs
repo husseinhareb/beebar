@@ -1007,6 +1007,14 @@ async fn watch_name_owner_changed_signals(
 }
 
 impl Module for TrayModule {
+    fn update_interval(&self) -> std::time::Duration {
+        // Icons + items propagate through async signals; we re-poll the
+        // cache periodically to pick up additions.
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn update(&mut self) {
         // Snapshot the current item list.
         let items: Vec<String> = self.item_rx.borrow().clone();

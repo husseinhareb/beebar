@@ -29,6 +29,14 @@ impl Module for CustomModule {
         }
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        // Custom shell commands can be expensive; users can dial it back via
+        // `refresh_interval_ms` on the module.
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn view(&self) -> ModuleView {
         self.chrome.apply(ModuleView {
             text: self.output.clone(),

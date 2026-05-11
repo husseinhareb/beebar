@@ -98,7 +98,10 @@ pub fn run_layer_shell(bar: &mut Bar) {
     let height = bar.height;
     let width = bar.width;
     let bottom = bar.bottom;
-    let update_interval = bar.refresh_interval;
+    // Upper bound on time between ticks: even if no module is due, redraw
+    // this often so background-worker modules (tray, bluetooth, window via
+    // inotify) get their pushed state on screen.
+    let refresh_ceiling = bar.refresh_interval;
 
     let layer_surface =
         layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("beebar"), None);
@@ -167,9 +170,10 @@ pub fn run_layer_shell(bar: &mut Bar) {
         .expect("initial roundtrip failed");
 
     // Poll-based event loop: poll the Wayland fd with a short timeout so
-    // workspace + window-title updates feel immediate without busy-spinning.
-    // The update interval is controlled by the bar's refresh_interval_ms config field.
-    let mut next_update = std::time::Instant::now();
+    // updates feel immediate without busy-spinning. Each module declares
+    // its own update_interval(); `Bar::tick()` runs only the due ones and
+    // tells us when the next module is due.
+    let mut next_tick = std::time::Instant::now();
 
     'main: loop {
         if let Err(e) = conn.flush() {
@@ -177,12 +181,12 @@ pub fn run_layer_shell(bar: &mut Bar) {
             break;
         }
 
-        // How long until the next scheduled module update?
+        // How long until the next scheduled tick?
         let now = std::time::Instant::now();
-        let timeout_ms: i32 = if now >= next_update {
+        let timeout_ms: i32 = if now >= next_tick {
             0
         } else {
-            (next_update - now).as_millis().min(i32::MAX as u128) as i32
+            (next_tick - now).as_millis().min(i32::MAX as u128) as i32
         };
 
         // Prepare to read events (must be done before polling the fd).
@@ -232,18 +236,31 @@ pub fn run_layer_shell(bar: &mut Bar) {
             break;
         }
 
-        // Periodic module update + redraw.  Also redraw immediately after
-        // pointer events (needs_redraw) so clicks feel responsive without
-        // waiting a full refresh interval.
+        // Per-module update + redraw.  Also redraw immediately after pointer
+        // events (needs_redraw) so clicks feel responsive without waiting
+        // a full interval.
         let now = std::time::Instant::now();
-        let timer_fired = state.configured && now >= next_update;
-        let redraw_now = timer_fired || state.needs_redraw;
+        let timer_fired = state.configured && now >= next_tick;
 
-        if redraw_now {
-            if timer_fired {
-                next_update = now + update_interval;
-                state.bar.update_all();
-            }
+        let mut should_redraw = state.needs_redraw;
+        if timer_fired {
+            let tick = state.bar.tick();
+            // Schedule the next loop wake-up at min(next_due, ceiling). The
+            // ceiling guarantees we still redraw periodically for modules
+            // pushing state from background workers.
+            let ceiling = now + refresh_ceiling;
+            next_tick = match tick.next_due {
+                Some(due) => due.min(ceiling),
+                None => ceiling,
+            };
+            // Redraw whenever a module's update() ran *or* the ceiling tick
+            // fired — the latter catches state pushed in by background
+            // workers (tray, bluetooth, window-via-inotify).
+            let _ = tick.updated;
+            should_redraw = true;
+        }
+
+        if should_redraw {
             state.needs_redraw = false;
             sync_popup_surface(&mut state);
             draw_frame(&mut state);

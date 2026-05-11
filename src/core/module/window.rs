@@ -133,6 +133,15 @@ impl Module for WindowModule {
         }
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        // Tight polling so the Hyprland-fallback path feels responsive on
+        // focus changes. The beewm path is inotify-driven and effectively
+        // realtime — this only governs how often hyprctl is invoked.
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_millis(100))
+    }
+
     fn view(&self) -> ModuleView {
         let title = self.current_title();
         let text = if title.is_empty() {

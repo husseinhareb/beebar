@@ -76,6 +76,12 @@ impl Module for BatteryModule {
         }
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_secs(1))
+    }
+
     fn view(&self) -> ModuleView {
         let icon = match self.capacity {
             0..=20 => &self.icons.low,

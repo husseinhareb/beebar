@@ -46,6 +46,7 @@ groups_right = [
 
 [module.workspaces]
 type = "workspaces"
+refresh_interval_ms = 100        # tight polling for snappy focus tracking
 count = 10
 labels = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
 active_color   = "#cba6f7"
@@ -57,6 +58,7 @@ empty_color    = "#585b70"
 
 [module.clock]
 type = "clock"
+refresh_interval_ms = 1000
 # 󰥔 = nf-md-clock-time-eight, 󰃭 = nf-md-calendar
 format = "󰥔 %I:%M %p   󰃭 %a, %b %e"
 foreground = "#00d483"
@@ -69,6 +71,7 @@ foreground = "#00d483"
 
 [module.window]
 type = "window"
+refresh_interval_ms = 100        # tight polling — feels instant on focus changes
 backend = "auto"
 max_length = 80
 empty_label = ""
@@ -78,6 +81,7 @@ foreground = "#cdd6f4"
 
 [module.playback]
 type = "playback"
+refresh_interval_ms = 1000
 format = "{icon} {track}  {buttons}"
 foreground = "#cdd6f4"
 # Playback control button icons (defaults shown):
@@ -91,6 +95,7 @@ foreground = "#cdd6f4"
 
 [module.network]
 type = "network"
+refresh_interval_ms = 1000
 format = "󰇚 {download}  󰕒 {upload}"
 foreground = "#0099ff"
 
@@ -98,6 +103,7 @@ foreground = "#0099ff"
 
 [module.bluetooth]
 type = "bluetooth"
+refresh_interval_ms = 1000       # update() is a no-op; this just paces redraws
 format = "{icon} {status}"
 icon_on            = "󰂯"
 icon_off           = "󰂲"
@@ -109,6 +115,7 @@ foreground = "#0062ff"
 
 [module.cpu]
 type = "cpu"
+refresh_interval_ms = 1000
 icon = "󰍛"            # 󰍛 = nf-md-memory (waybar uses the same idea for cpu)
 foreground = "#89dceb"
 
@@ -116,6 +123,7 @@ foreground = "#89dceb"
 
 [module.temperature]
 type = "temperature"
+refresh_interval_ms = 1000
 icon = "󰔏"            # 󰔏 = nf-md-thermometer
 warn_threshold     = 75.0
 critical_threshold = 90.0
@@ -127,6 +135,7 @@ foreground = "#94e2d5"
 
 [module.memory]
 type = "memory"
+refresh_interval_ms = 1000
 format = "󰍛 {used}/{total}"
 
 # ── Brightness ────────────────────────────────────────────────────────────────
@@ -134,6 +143,7 @@ format = "󰍛 {used}/{total}"
 
 [module.brightness]
 type = "brightness"
+refresh_interval_ms = 1000
 backend = "sysfs"
 device  = "nvidia_0"
 show_slider = false
@@ -148,6 +158,7 @@ foreground = "#f9e2af"
 
 [module.volume]
 type = "volume"
+refresh_interval_ms = 1000
 target = "sink"
 show_slider = false
 icon_muted       = "󰝟"
@@ -164,6 +175,7 @@ foreground = "#679df5"
 
 [module.microphone]
 type = "volume"
+refresh_interval_ms = 1000
 target = "source"
 show_slider = false
 # 󰍬 = nf-md-microphone, 󰍭 = nf-md-microphone-off, 󰍳 = nf-md-microphone-question
@@ -181,6 +193,7 @@ foreground = "#bb84ff"
 
 [module.battery]
 type = "battery"
+refresh_interval_ms = 1000
 icon_low    = "󰁻"
 icon_medium = "󰁾"
 icon_high   = "󰂁"
@@ -191,6 +204,7 @@ foreground = "#3acc2d"
 
 [module.tray]
 type = "tray"
+refresh_interval_ms = 1000       # cache poll cadence; signals push immediately
 icon_size     = 18
 padding_left  = 8.0
 padding_right = 8.0

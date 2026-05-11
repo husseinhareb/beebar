@@ -226,6 +226,12 @@ impl Module for WorkspacesModule {
         self.refresh_workspace_state();
     }
 
+    fn update_interval(&self) -> std::time::Duration {
+        self.chrome
+            .update_interval
+            .unwrap_or(std::time::Duration::from_millis(100))
+    }
+
     fn view(&self) -> ModuleView {
         let base_style = TextStyle {
             color: self.chrome.foreground.unwrap_or(Color::WHITE),
@@ -350,6 +356,7 @@ mod tests {
             background: None,
             padding: (8.0, 8.0),
             icon_spacing: None,
+            update_interval: None,
         }
     }
 
