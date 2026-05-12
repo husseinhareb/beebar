@@ -1,25 +1,17 @@
 //! Active-window module.
 //!
-//! Two backends:
-//!
-//! 1. **beewm** — read the focused window's title from `/tmp/beewm_window`
-//!    (one line of plain text, no trailing newline required). An inotify
-//!    watcher keeps the cached title up-to-date in real time, so the bar
-//!    renders the new title on its very next tick.
-//! 2. **Hyprland** — shell out to `hyprctl activewindow -j` each tick and
-//!    parse the JSON `title` field.
-//!
-//! Source selection (`backend` config field):
-//!   - `"beewm"`     — beewm only.
-//!   - `"hyprland"`  — Hyprland only.
-//!   - `"auto"` (default) — prefer `/tmp/beewm_window` when present, otherwise
-//!     fall back to Hyprland.
+//! Source backends:
+//!   - `"beewm"` — subscribe to the beewm event socket (`beewm-events.sock`
+//!     in `$XDG_RUNTIME_DIR`, fallback `/tmp/beewm-events.sock`). The socket
+//!     pushes `window>>title\n` events whenever the focused window changes, so
+//!     the bar is updated with zero polling overhead.
+//!   - `"hyprland"` — shell out to `hyprctl activewindow -j` each tick.
+//!   - `"auto"` (default) — prefer the beewm socket when the compositor is
+//!     running, otherwise fall back to Hyprland.
 
-use std::ffi::CString;
-use std::fs;
-use std::io;
-use std::os::raw::c_int;
-use std::path::{Path, PathBuf};
+use std::io::{BufRead, BufReader};
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -30,7 +22,6 @@ use crate::renderer::primitives::TextStyle;
 
 const DEFAULT_MAX_LENGTH: usize = 80;
 const DEFAULT_EMPTY_LABEL: &str = "";
-const BEEWM_WINDOW_STATE_PATH: &str = "/tmp/beewm_window";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -57,7 +48,8 @@ impl Source {
 }
 
 pub struct WindowModule {
-    /// Title from the beewm file, kept fresh by the inotify thread.
+    /// Title pushed by the beewm event socket subscriber thread.
+    /// `None` means the socket is not connected (beewm not running).
     beewm_title: Arc<Mutex<Option<String>>>,
     /// Last-known Hyprland title, refreshed per tick when used.
     hyprland_title: String,
@@ -65,7 +57,7 @@ pub struct WindowModule {
     empty_label: String,
     chrome: ModuleChrome,
     source: Source,
-    /// Keep the watcher handle alive for the module's lifetime.
+    /// Keep the subscriber thread handle alive for the module's lifetime.
     _watcher: Option<thread::JoinHandle<()>>,
 }
 
@@ -79,12 +71,8 @@ impl WindowModule {
         let source = Source::from_config(backend.as_deref());
         let beewm_title = Arc::new(Mutex::new(None));
 
-        // Spawn the inotify watcher whenever the beewm backend can be selected.
         let watcher = if matches!(source, Source::Beewm | Source::Auto) {
-            Some(spawn_beewm_watcher(
-                PathBuf::from(BEEWM_WINDOW_STATE_PATH),
-                beewm_title.clone(),
-            ))
+            Some(spawn_event_socket_watcher(beewm_title.clone()))
         } else {
             None
         };
@@ -115,6 +103,8 @@ impl WindowModule {
         match self.source {
             Source::Beewm => self.beewm_snapshot().unwrap_or_default(),
             Source::Hyprland => self.hyprland_title.clone(),
+            // When connected to beewm the snapshot is Some; fall back to
+            // Hyprland only when the socket is not reachable (None).
             Source::Auto => self
                 .beewm_snapshot()
                 .unwrap_or_else(|| self.hyprland_title.clone()),
@@ -124,8 +114,8 @@ impl WindowModule {
 
 impl Module for WindowModule {
     fn update(&mut self) {
-        // beewm state is pushed in by the watcher thread; nothing to do here.
-        // Hyprland still needs a poll since it has no equivalent state file.
+        // The beewm path is driven by the subscriber thread; nothing to poll.
+        // Hyprland still needs a per-tick query because it has no event socket.
         if matches!(self.source, Source::Hyprland | Source::Auto)
             && self.beewm_snapshot().is_none()
         {
@@ -134,9 +124,6 @@ impl Module for WindowModule {
     }
 
     fn update_interval(&self) -> std::time::Duration {
-        // Tight polling so the Hyprland-fallback path feels responsive on
-        // focus changes. The beewm path is inotify-driven and effectively
-        // realtime — this only governs how often hyprctl is invoked.
         self.chrome
             .update_interval
             .unwrap_or(std::time::Duration::from_millis(100))
@@ -157,6 +144,68 @@ impl Module for WindowModule {
     }
 }
 
+// ─── beewm event-socket subscriber ──────────────────────────────────────────
+
+fn spawn_event_socket_watcher(shared: Arc<Mutex<Option<String>>>) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("beebar-window-events".into())
+        .spawn(move || run_event_socket_watcher(shared))
+        .expect("failed to spawn window-module event-socket thread")
+}
+
+/// Connect (and reconnect) to the beewm event socket, parse `window>>` events,
+/// and push the title into `shared`. Clears the title on disconnect so the
+/// `Auto` source can fall back to Hyprland while beewm is not running.
+fn run_event_socket_watcher(shared: Arc<Mutex<Option<String>>>) {
+    let path = event_socket_path();
+    loop {
+        match UnixStream::connect(&path) {
+            Ok(stream) => {
+                log::debug!("[window] connected to beewm event socket");
+                let reader = BufReader::new(stream);
+                for line in reader.lines() {
+                    match line {
+                        Ok(line) => handle_event_line(&line, &shared),
+                        Err(error) => {
+                            log::debug!("[window] event socket read error: {error}");
+                            break;
+                        }
+                    }
+                }
+                // Connection closed — clear the cached title so `Auto` falls
+                // back to Hyprland until beewm is running again.
+                *shared.lock().unwrap() = None;
+                log::debug!("[window] disconnected from beewm event socket; will retry");
+            }
+            Err(_) => {
+                // beewm is not running yet; retry shortly.
+            }
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
+fn handle_event_line(line: &str, shared: &Arc<Mutex<Option<String>>>) {
+    if let Some(title) = line.strip_prefix("window>>") {
+        let value = if title.is_empty() {
+            Some(String::new())
+        } else {
+            Some(title.to_string())
+        };
+        *shared.lock().unwrap() = value;
+    }
+}
+
+fn event_socket_path() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .map(|dir| dir.join("beewm-events.sock"))
+        .unwrap_or_else(|| PathBuf::from("/tmp/beewm-events.sock"))
+}
+
+// ─── Hyprland fallback ───────────────────────────────────────────────────────
+
 fn read_hyprland_title() -> Option<String> {
     let output = Command::new("hyprctl")
         .arg("activewindow")
@@ -170,230 +219,8 @@ fn read_hyprland_title() -> Option<String> {
     extract_title(&raw).filter(|t| !t.is_empty())
 }
 
-fn read_beewm_file(path: &Path) -> Option<String> {
-    let raw = fs::read_to_string(path).ok()?;
-    let trimmed = raw.trim_end_matches(['\n', '\r']).to_string();
-    Some(trimmed)
-}
-
-/// Spawn a thread that watches `path` via inotify and pushes new contents into
-/// `shared`. Handles the common atomic-rename write pattern by also watching
-/// the parent directory and re-attaching the watch when the file is replaced.
-///
-/// If the file does not exist yet (beewm not running, or hasn't written), the
-/// thread retries every 500ms until it can attach a watch.
-fn spawn_beewm_watcher(path: PathBuf, shared: Arc<Mutex<Option<String>>>) -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("beebar-window-inotify".into())
-        .spawn(move || run_beewm_watcher(path, shared))
-        .expect("failed to spawn window-module inotify thread")
-}
-
-fn run_beewm_watcher(path: PathBuf, shared: Arc<Mutex<Option<String>>>) {
-    // Seed the cache with the current contents (if any) so the very first
-    // frame after startup already shows the title.
-    push_update(&path, &shared);
-
-    loop {
-        match Inotify::open() {
-            Ok(mut inotify) => {
-                if let Err(error) = setup_watches(&mut inotify, &path) {
-                    log::debug!("[window] inotify setup: {error}");
-                    thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-                // Drain events forever. On read error, restart from scratch.
-                if let Err(error) = drain_events(&mut inotify, &path, &shared) {
-                    log::debug!("[window] inotify drain ended: {error}");
-                }
-            }
-            Err(error) => {
-                log::warn!("[window] inotify unavailable ({}); falling back to polling", error);
-                // Fall back to a slow poll loop so we still pick up changes.
-                loop {
-                    thread::sleep(Duration::from_millis(500));
-                    push_update(&path, &shared);
-                }
-            }
-        }
-        thread::sleep(Duration::from_millis(500));
-    }
-}
-
-fn setup_watches(inotify: &mut Inotify, path: &Path) -> io::Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    // Watch the parent for create/move-in events so we catch atomic replaces.
-    inotify.add_watch(
-        parent,
-        IN_CREATE | IN_MOVED_TO | IN_DELETE | IN_DELETE_SELF,
-    )?;
-    // Watch the file itself for in-place writes. Tolerate ENOENT — the parent
-    // watch will tell us when it appears.
-    let _ = inotify.add_watch(path, IN_MODIFY | IN_CLOSE_WRITE | IN_MOVE_SELF);
-    Ok(())
-}
-
-fn drain_events(
-    inotify: &mut Inotify,
-    path: &Path,
-    shared: &Arc<Mutex<Option<String>>>,
-) -> io::Result<()> {
-    let target_name = path
-        .file_name()
-        .map(|n| n.to_owned())
-        .unwrap_or_default();
-    let mut buf = [0u8; 4096];
-    loop {
-        let events = inotify.read(&mut buf)?;
-        let mut should_update = false;
-        let mut should_reattach = false;
-        for event in events {
-            // Events from the file watch have empty name; events from the
-            // parent dir watch have the dirent name.
-            if event.name.is_empty() {
-                should_update = true;
-                if event.mask & (IN_MOVE_SELF | IN_DELETE_SELF) != 0 {
-                    should_reattach = true;
-                }
-            } else if event.name == target_name.as_os_str() {
-                should_update = true;
-                if event.mask & (IN_CREATE | IN_MOVED_TO) != 0 {
-                    should_reattach = true;
-                }
-            }
-        }
-        if should_update {
-            push_update(path, shared);
-        }
-        if should_reattach {
-            // Re-attach the per-file watch so future in-place edits register.
-            let _ = inotify.add_watch(path, IN_MODIFY | IN_CLOSE_WRITE | IN_MOVE_SELF);
-        }
-    }
-}
-
-fn push_update(path: &Path, shared: &Arc<Mutex<Option<String>>>) {
-    let new = read_beewm_file(path);
-    let mut guard = shared.lock().unwrap();
-    *guard = new;
-}
-
-// ─── Minimal inotify wrapper (libc-direct, no extra deps) ───────────────────
-
-const IN_MODIFY: u32 = 0x0000_0002;
-const IN_MOVE_SELF: u32 = 0x0000_0800;
-const IN_CLOSE_WRITE: u32 = 0x0000_0008;
-const IN_MOVED_TO: u32 = 0x0000_0080;
-const IN_CREATE: u32 = 0x0000_0100;
-const IN_DELETE: u32 = 0x0000_0200;
-const IN_DELETE_SELF: u32 = 0x0000_0400;
-const IN_NONBLOCK: c_int = 0o4000;
-
-struct Inotify {
-    fd: c_int,
-}
-
-struct InotifyEvent {
-    mask: u32,
-    name: std::ffi::OsString,
-}
-
-impl Inotify {
-    fn open() -> io::Result<Self> {
-        // SAFETY: inotify_init1 is safe to call; returns -1 on error.
-        let fd = unsafe { libc::inotify_init1(IN_NONBLOCK) };
-        if fd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self { fd })
-    }
-
-    fn add_watch(&mut self, path: &Path, mask: u32) -> io::Result<c_int> {
-        let c_path = CString::new(path.as_os_str().as_encoded_bytes())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-        // SAFETY: fd is valid for the lifetime of self; c_path is null-terminated.
-        let wd = unsafe { libc::inotify_add_watch(self.fd, c_path.as_ptr(), mask) };
-        if wd < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(wd)
-    }
-
-    /// Block until at least one event is available, then parse all events that
-    /// fit into `buf` (which must be ≥ sizeof(inotify_event) + NAME_MAX + 1).
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<Vec<InotifyEvent>> {
-        // Use poll() to block until readable, since the fd is non-blocking.
-        let mut pollfd = libc::pollfd {
-            fd: self.fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: pointer is valid for the duration of the call.
-        let rc = unsafe { libc::poll(&mut pollfd, 1, -1) };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // SAFETY: buf is a valid mutable byte slice; fd is open.
-        let n = unsafe {
-            libc::read(
-                self.fd,
-                buf.as_mut_ptr() as *mut libc::c_void,
-                buf.len(),
-            )
-        };
-        if n < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let n = n as usize;
-
-        let mut out = Vec::new();
-        let header_size = std::mem::size_of::<libc::inotify_event>();
-        let mut offset = 0;
-        while offset + header_size <= n {
-            // SAFETY: we just bounds-checked; buf has enough room for a header.
-            let ev: &libc::inotify_event = unsafe {
-                &*(buf.as_ptr().add(offset) as *const libc::inotify_event)
-            };
-            let name_len = ev.len as usize;
-            let name_start = offset + header_size;
-            let name_end = name_start + name_len;
-            if name_end > n {
-                break;
-            }
-            let raw_name = &buf[name_start..name_end];
-            // The name field is NUL-padded; strip trailing NULs before the OsString.
-            let trimmed_name = raw_name
-                .iter()
-                .position(|&b| b == 0)
-                .map(|pos| &raw_name[..pos])
-                .unwrap_or(raw_name);
-            let name = std::ffi::OsString::from(
-                std::str::from_utf8(trimmed_name).unwrap_or("").to_string(),
-            );
-            out.push(InotifyEvent {
-                mask: ev.mask,
-                name,
-            });
-            offset = name_end;
-        }
-        Ok(out)
-    }
-}
-
-impl Drop for Inotify {
-    fn drop(&mut self) {
-        if self.fd >= 0 {
-            // SAFETY: fd is owned by self.
-            unsafe { libc::close(self.fd) };
-        }
-    }
-}
-
-/// Pull the `"title"` value out of `hyprctl activewindow -j` JSON output.
-///
-/// We avoid pulling in a full JSON dep for one field — the output is a flat
-/// single-line JSON object with predictable escaping.
+/// Pull the `"title"` value out of `hyprctl activewindow -j` JSON output
+/// without pulling in a full JSON dependency.
 fn extract_title(json: &str) -> Option<String> {
     let key = "\"title\"";
     let key_pos = json.find(key)?;
@@ -432,6 +259,8 @@ fn extract_title(json: &str) -> Option<String> {
     None
 }
 
+// ─── Utilities ───────────────────────────────────────────────────────────────
+
 fn truncate_chars(text: &str, max: usize) -> String {
     let count = text.chars().count();
     if count <= max {
@@ -444,7 +273,7 @@ fn truncate_chars(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_title, truncate_chars, Source};
+    use super::{Source, extract_title, truncate_chars};
 
     #[test]
     fn extracts_title_from_hyprctl_json() {
