@@ -49,29 +49,45 @@ pub struct BatteryModule {
     status: String,
     icons: BatteryIcons,
     chrome: ModuleChrome,
+    device: String,
 }
 
 impl BatteryModule {
-    pub fn new(icons: BatteryIcons, chrome: ModuleChrome) -> Self {
+    pub fn new(icons: BatteryIcons, chrome: ModuleChrome, device: Option<String>) -> Self {
+        let detected = device.unwrap_or_else(|| Self::detect_battery().unwrap_or_else(|| "BAT0".to_string()));
         Self {
             capacity: 0,
             status: String::from("Unknown"),
             icons,
             chrome,
+            device: detected,
         }
     }
 
     fn read_sysfs(path: &str) -> Option<String> {
         fs::read_to_string(path).ok().map(|s| s.trim().to_string())
     }
+
+    fn detect_battery() -> Option<String> {
+        let entries = fs::read_dir("/sys/class/power_supply").ok()?;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let type_path = format!("/sys/class/power_supply/{}/type", name);
+            if Self::read_sysfs(&type_path).as_deref() == Some("Battery") {
+                return Some(name);
+            }
+        }
+        None
+    }
 }
 
 impl Module for BatteryModule {
     fn update(&mut self) {
-        if let Some(cap) = Self::read_sysfs("/sys/class/power_supply/BAT0/capacity") {
+        let base = format!("/sys/class/power_supply/{}", self.device);
+        if let Some(cap) = Self::read_sysfs(&format!("{}/capacity", base)) {
             self.capacity = cap.parse().unwrap_or(0);
         }
-        if let Some(status) = Self::read_sysfs("/sys/class/power_supply/BAT0/status") {
+        if let Some(status) = Self::read_sysfs(&format!("{}/status", base)) {
             self.status = status;
         }
     }

@@ -193,17 +193,27 @@ impl Renderer for CairoRenderer {
         } // surf_data borrow dropped here, surface is now usable
 
         cr.save().ok();
-        cr.translate(pos.x, pos.y);
 
-        // Scale the source icon to the target size.
-        let scale_x = size as f64 / src_width as f64;
-        let scale_y = size as f64 / src_height as f64;
-        cr.scale(scale_x, scale_y);
+        // Preserve aspect ratio: scale uniformly by the larger dimension so the
+        // icon fits inside the size×size slot without stretching, then center
+        // the (possibly non-square) result within the slot. Scaling X and Y
+        // independently would distort non-square pixmaps (e.g. some Steam /
+        // Telegram tray icons).
+        let src_w = src_width as f64;
+        let src_h = src_height as f64;
+        let scale = (size as f64 / src_w).min(size as f64 / src_h);
+        let scaled_w = src_w * scale;
+        let scaled_h = src_h * scale;
+        let offset_x = (size as f64 - scaled_w) / 2.0;
+        let offset_y = (size as f64 - scaled_h) / 2.0;
+
+        cr.translate(pos.x + offset_x, pos.y + offset_y);
+        cr.scale(scale, scale);
 
         cr.set_source_surface(&icon_surface, 0.0, 0.0).ok();
         // Set bilinear filter on the source pattern for smooth scaling.
         cr.source().set_filter(cairo::Filter::Bilinear);
-        cr.rectangle(0.0, 0.0, src_width as f64, src_height as f64);
+        cr.rectangle(0.0, 0.0, src_w, src_h);
         cr.fill().ok();
         cr.restore().ok();
     }

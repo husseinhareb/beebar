@@ -64,6 +64,11 @@ trait StatusNotifierItem {
     #[zbus(property)]
     fn menu(&self) -> zbus::Result<OwnedObjectPath>;
 
+    /// When true the item only has a context menu; a left click (Activate)
+    /// should present that menu instead of activating the application.
+    #[zbus(property)]
+    fn item_is_menu(&self) -> zbus::Result<bool>;
+
     /// Show the application or bring its window to the foreground.
     async fn activate(&self, x: i32, y: i32) -> zbus::Result<()>;
 
@@ -163,7 +168,17 @@ impl StatusNotifierWatcher {
 
 // ─── Icon resolution helpers ─────────────────────────────────────────────────
 
-/// Decode SNI pixmap data into ARGB32 bytes.
+/// Premultiply a single straight-alpha colour channel.
+/// Cairo's ARGB32 surfaces expect premultiplied alpha; SNI pixmaps and decoded
+/// PNG/SVG files carry straight (non-premultiplied) alpha, so we must multiply
+/// each colour channel by alpha or anti-aliased / translucent edges blend with
+/// visible halos.
+#[inline]
+fn premultiply(channel: u8, alpha: u8) -> u8 {
+    ((channel as u16 * alpha as u16 + 127) / 255) as u8
+}
+
+/// Decode SNI pixmap data into premultiplied ARGB32 bytes.
 /// SNI pixmaps are big-endian ARGBs (4 bytes per pixel); we need to convert to
 /// native-endian ARGB32 as expected by Cairo.
 fn decode_sni_pixmap(width: i32, height: i32, raw: &[u8]) -> Option<IconData> {
@@ -173,17 +188,17 @@ fn decode_sni_pixmap(width: i32, height: i32, raw: &[u8]) -> Option<IconData> {
     if raw.len() < expected {
         return None;
     }
-    // SNI sends ARGB big-endian; Cairo wants ARGB native-endian (little-endian on x86).
+    // SNI sends ARGB big-endian; Cairo wants premultiplied ARGB native-endian
+    // (little-endian on x86): in-memory byte order B G R A.
     let mut pixels = vec![0u8; expected];
     for i in (0..expected).step_by(4) {
         let a = raw[i];
         let r = raw[i + 1];
         let g = raw[i + 2];
         let b = raw[i + 3];
-        // Cairo ARGB32 little-endian layout: B G R A
-        pixels[i] = b;
-        pixels[i + 1] = g;
-        pixels[i + 2] = r;
+        pixels[i] = premultiply(b, a);
+        pixels[i + 1] = premultiply(g, a);
+        pixels[i + 2] = premultiply(r, a);
         pixels[i + 3] = a;
     }
     Some(IconData {
@@ -333,9 +348,10 @@ fn load_image_file(path: &std::path::Path, size: u32) -> Option<IconData> {
         let g = raw[i + 1];
         let b = raw[i + 2];
         let a = raw[i + 3];
-        pixels[i] = b;
-        pixels[i + 1] = g;
-        pixels[i + 2] = r;
+        // Cairo ARGB32 wants premultiplied alpha in B G R A byte order.
+        pixels[i] = premultiply(b, a);
+        pixels[i + 1] = premultiply(g, a);
+        pixels[i + 2] = premultiply(r, a);
         pixels[i + 3] = a;
     }
     Some(IconData {
@@ -684,6 +700,11 @@ async fn trigger_inline_menu_item(conn: &Connection, service: &str, item_id: i32
     }
 }
 
+/// Returns true if any pixel in a decoded ARGB32 icon is not fully opaque.
+fn icon_has_alpha(icon: &IconData) -> bool {
+    icon.pixels.chunks_exact(4).any(|px| px[3] != 0xff)
+}
+
 /// Fetch the best icon for one SNI item.
 async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<IconData> {
     let (bus_name, object_path) = parse_sni_service(service);
@@ -696,6 +717,9 @@ async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<
         .await
         .ok()?;
 
+    let title = proxy.title().await.unwrap_or_default();
+    let status = proxy.status().await.unwrap_or_default();
+
     // Prefer icon_pixmap (has the actual pixels).
     if let Ok(pixmaps) = proxy.icon_pixmap().await {
         // Pick the pixmap closest to the desired size.
@@ -705,6 +729,19 @@ async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<
         });
         if let Some((w, h, data)) = best {
             if let Some(icon) = decode_sni_pixmap(*w, *h, data) {
+                log::info!(
+                    "[tray] icon service={} title={:?} status={} source=IconPixmap \
+                     src_size={}x{} target_size={}x{} pixmaps_available={} alpha={}",
+                    service,
+                    title,
+                    status,
+                    icon.width,
+                    icon.height,
+                    icon_size,
+                    icon_size,
+                    pixmaps.len(),
+                    icon_has_alpha(&icon),
+                );
                 return Some(icon);
             }
         }
@@ -715,10 +752,37 @@ async fn fetch_icon(conn: &Connection, service: &str, icon_size: u32) -> Option<
     if !icon_name.is_empty() {
         let theme_path = proxy.icon_theme_path().await.unwrap_or_default();
         if let Some(icon) = load_icon_by_name(&icon_name, &theme_path, icon_size) {
+            log::info!(
+                "[tray] icon service={} title={:?} status={} source=IconName({:?}) \
+                 theme_path={:?} src_size={}x{} target_size={}x{} alpha={} theme_lookup=ok",
+                service,
+                title,
+                status,
+                icon_name,
+                theme_path,
+                icon.width,
+                icon.height,
+                icon_size,
+                icon_size,
+                icon_has_alpha(&icon),
+            );
             return Some(icon);
         }
+        log::warn!(
+            "[tray] icon service={} title={:?} IconName={:?} theme_path={:?} theme_lookup=FAILED",
+            service,
+            title,
+            icon_name,
+            theme_path,
+        );
     }
 
+    log::warn!(
+        "[tray] icon service={} title={:?} status={} no usable icon source found",
+        service,
+        title,
+        status,
+    );
     None
 }
 
@@ -1116,26 +1180,73 @@ impl Module for TrayModule {
 
         match event.button {
             MouseButton::Left => {
-                self.rt.spawn(async move {
+                let inline_menu = self.inline_menu.clone();
+                let anchor_x = event.bar_x;
+                let menu = self.rt.block_on(async move {
                     let (bus, path) = parse_sni_service(&service);
                     let proxy = StatusNotifierItemProxy::builder(&conn)
-                        .destination(bus)
+                        .destination(bus.clone())
                         .ok()
                         .and_then(|b| b.path(path).ok());
-                    if let Some(builder) = proxy {
-                        match builder.build().await {
-                            Ok(p) => {
-                                let _ = p.activate(x, y).await;
-                            }
-                            Err(e) => log::debug!("[tray] proxy build: {e}"),
+                    let Some(builder) = proxy else {
+                        return None;
+                    };
+                    let p = match builder.build().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            log::debug!("[tray] proxy build: {e}");
+                            return None;
+                        }
+                    };
+
+                    // Menu-only items (ItemIsMenu) have no meaningful Activate;
+                    // present their DBusMenu inline instead. We render it
+                    // ourselves rather than calling ContextMenu so apps cannot
+                    // pop a screen-sized toplevel of their own.
+                    if p.item_is_menu().await.unwrap_or(false) {
+                        if let Some(menu) = fetch_inline_menu(&conn, &service, anchor_x).await {
+                            log::info!(
+                                "[tray] left-click on menu-only item service={} opening inline DBusMenu items={}",
+                                service,
+                                menu.items.len(),
+                            );
+                            return Some(menu);
                         }
                     }
+
+                    let _ = p.activate(x, y).await;
+                    None
                 });
+                *inline_menu.lock().unwrap() = menu;
             }
             MouseButton::Right => {
                 let inline_menu = self.inline_menu.clone();
                 let anchor_x = event.bar_x;
                 let menu = self.rt.block_on(async move {
+                    // Render the item's DBusMenu ourselves as a small popup. We
+                    // deliberately do NOT call the SNI `ContextMenu` method:
+                    // that asks the *application* to draw its own menu surface,
+                    // which apps like Discord create as a full toplevel — the
+                    // compositor then tiles it into a screen-sized white window.
+                    // Drawing the DBusMenu inline keeps the menu a properly
+                    // sized, anchored popup owned by beebar.
+                    if let Some(menu) = fetch_inline_menu(&conn, &service, anchor_x).await {
+                        log::info!(
+                            "[tray] right-click service={} opening inline DBusMenu items={} anchor_x={:.1}",
+                            service,
+                            menu.items.len(),
+                            anchor_x,
+                        );
+                        return Some(menu);
+                    }
+
+                    // No DBusMenu exposed: fall back to the host-driven
+                    // ContextMenu as a last resort (the item has no other way to
+                    // present a menu).
+                    log::debug!(
+                        "[tray] service={} exposes no DBusMenu; falling back to SNI ContextMenu",
+                        service
+                    );
                     let (bus, path) = parse_sni_service(&service);
                     let proxy = StatusNotifierItemProxy::builder(&conn)
                         .destination(bus)
@@ -1145,8 +1256,7 @@ impl Module for TrayModule {
                         match builder.build().await {
                             Ok(p) => {
                                 if let Err(error) = p.context_menu(x, y).await {
-                                    log::debug!("[tray] context_menu unavailable, falling back to dbusmenu: {error}");
-                                    return fetch_inline_menu(&conn, &service, anchor_x).await;
+                                    log::debug!("[tray] context_menu failed: {error}");
                                 }
                             }
                             Err(e) => log::debug!("[tray] proxy build: {e}"),

@@ -64,6 +64,7 @@ fn build_module(
         "battery" => Some(Box::new(BatteryModule::new(
             BatteryIcons::from_config(mcfg),
             chrome,
+            mcfg.device.clone(),
         ))),
         "temperature" => Some(Box::new(TemperatureModule::new(
             mcfg.format.clone(),
