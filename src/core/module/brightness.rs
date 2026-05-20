@@ -590,11 +590,12 @@ fn detect_backend(preferred: Option<&str>) -> BrightnessBackend {
         }
     }
 
-    // Prefer sysfs: no external dependency, works on every distro.
-    if sysfs_has_backlight() {
-        BrightnessBackend::Sysfs
-    } else if command_exists("brightnessctl") {
+    // Prefer brightnessctl when present: sysfs is widely readable, but direct
+    // writes often require permissions that regular bar processes do not have.
+    if command_exists("brightnessctl") {
         BrightnessBackend::Brightnessctl
+    } else if sysfs_has_backlight() {
+        BrightnessBackend::Sysfs
     } else {
         BrightnessBackend::Unavailable
     }
@@ -847,6 +848,32 @@ mod tests {
             module.action_for_click(&click_event(slider_click_x(&module, 1.0), module_width)),
             Some(ClickAction::SetBrightness(100))
         );
+    }
+
+    #[test]
+    fn scroll_nudge_uses_configured_step_and_clamps() {
+        let mut config = default_module_config();
+        config.scroll_step = Some(7);
+        let mut module = BrightnessModule::new(
+            None,
+            None,
+            Some(20),
+            Some(100),
+            default_chrome(),
+            BrightnessIcons::default(),
+            SliderGlyphs::new("▐", "█", "░", "▌"),
+            &config,
+        );
+
+        module.brightness_percent = 50;
+        assert_eq!(module.nudged_percent(1), 57);
+        assert_eq!(module.nudged_percent(-1), 43);
+
+        module.brightness_percent = 98;
+        assert_eq!(module.nudged_percent(1), 100);
+
+        module.brightness_percent = 3;
+        assert_eq!(module.nudged_percent(-1), 0);
     }
 
     #[test]

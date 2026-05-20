@@ -144,7 +144,7 @@ format = "󰍛 {used}/{total}"
 [module.brightness]
 type = "brightness"
 refresh_interval_ms = 1000
-backend = "sysfs"
+backend = "brightnessctl"
 device  = "nvidia_0"
 show_slider = false
 icon_low    = "󰃚"
