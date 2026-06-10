@@ -1,5 +1,5 @@
 use cairo::{Context, Format, ImageSurface};
-use pango::{FontDescription, Weight};
+use pango::{EllipsizeMode, FontDescription, Weight};
 use pangocairo::functions as pangocairo;
 
 use super::color::Color;
@@ -98,6 +98,44 @@ impl Renderer for CairoRenderer {
 
         let (w, _) = layout.pixel_size();
         w as f64
+    }
+
+    fn draw_text_ellipsized(&mut self, rect: Rect, text: &str, style: &TextStyle) -> f64 {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return 0.0;
+        }
+
+        let cr = self.cr.as_ref().expect("call begin() first");
+        let layout = pangocairo::create_layout(cr);
+        let font_desc = build_font_desc(style);
+        layout.set_font_description(Some(&font_desc));
+        layout.set_text(text);
+        layout.set_width((rect.width * pango::SCALE as f64).round() as i32);
+        layout.set_ellipsize(EllipsizeMode::End);
+        layout.set_single_paragraph_mode(true);
+
+        cr.set_source_rgba(style.color.r, style.color.g, style.color.b, style.color.a);
+        cr.move_to(rect.x, rect.y);
+        pangocairo::show_layout(cr, &layout);
+
+        let (w, _) = layout.pixel_size();
+        (w as f64).min(rect.width)
+    }
+
+    fn push_clip(&mut self, rect: Rect) {
+        let cr = self.cr.as_ref().expect("call begin() first");
+        cr.save().ok();
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            cr.rectangle(rect.x, rect.y, 0.0, 0.0);
+        } else {
+            cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+        }
+        cr.clip();
+    }
+
+    fn pop_clip(&mut self) {
+        let cr = self.cr.as_ref().expect("call begin() first");
+        cr.restore().ok();
     }
 
     fn measure_text(&self, text: &str, style: &TextStyle) -> f64 {

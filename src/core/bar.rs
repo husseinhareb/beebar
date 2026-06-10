@@ -83,11 +83,7 @@ impl Bar {
     }
 
     /// Append a pill group (list of module ids) to the given side.
-    pub fn add_group(
-        &mut self,
-        ids: Vec<ModuleId>,
-        section: super::layout::Alignment,
-    ) {
+    pub fn add_group(&mut self, ids: Vec<ModuleId>, section: super::layout::Alignment) {
         if ids.is_empty() {
             return;
         }
@@ -255,7 +251,12 @@ impl Bar {
     }
 
     /// Measure the rendered width of a module, including its padding.
-    pub fn measure_module<R: Renderer>(&self, id: &ModuleId, renderer: &R, pill_height: f64) -> f64 {
+    pub fn measure_module<R: Renderer>(
+        &self,
+        id: &ModuleId,
+        renderer: &R,
+        pill_height: f64,
+    ) -> f64 {
         let Some(view) = self.module_view(id) else {
             return 0.0;
         };
@@ -265,10 +266,7 @@ impl Bar {
                 .map(|s| s as f64)
                 .unwrap_or((pill_height - 4.0).max(8.0));
             let n = view.icons.len() as f64;
-            view.padding.0
-                + view.padding.1
-                + n * icon_size
-                + (n - 1.0).max(0.0) * view.icon_spacing
+            view.padding.0 + view.padding.1 + n * icon_size + (n - 1.0).max(0.0) * view.icon_spacing
         } else {
             view.text_width(renderer) + view.padding.0 + view.padding.1
         }
@@ -323,20 +321,23 @@ pub fn render_bar<R: Renderer>(bar: &Bar, renderer: &mut R, width: u32, height: 
     // Pass 2: modules. Per-module backgrounds (if set) draw inside the pill.
     for group in &groups {
         for region in &group.modules {
+            if region.width <= 0.0 {
+                continue;
+            }
             let Some(view) = bar.module_view(&region.id) else {
                 continue;
             };
 
+            let module_rect = Rect {
+                x: region.x,
+                y: pill_top,
+                width: region.width,
+                height: pill_h,
+            };
+            renderer.push_clip(module_rect);
+
             if let Some(bg) = view.background {
-                renderer.draw_rect(
-                    Rect {
-                        x: region.x,
-                        y: pill_top,
-                        width: region.width,
-                        height: pill_h,
-                    },
-                    bg,
-                );
+                renderer.draw_rect(module_rect, bg);
             }
 
             if !view.icons.is_empty() {
@@ -360,14 +361,40 @@ pub fn render_bar<R: Renderer>(bar: &Bar, renderer: &mut R, width: u32, height: 
                 let text_h = view.text_height(renderer);
                 let y = pill_top + (pill_h - text_h) / 2.0 + bar.text_y_offset;
                 let mut x = region.x + view.padding.0;
+                let content_right = region.x + region.width - view.padding.1;
                 if view.text_segments.is_empty() {
-                    renderer.draw_text(Point { x, y }, &view.text, &view.style);
+                    let content_width = (content_right - x).max(0.0);
+                    renderer.draw_text_ellipsized(
+                        Rect {
+                            x,
+                            y,
+                            width: content_width,
+                            height: text_h,
+                        },
+                        &view.text,
+                        &view.style,
+                    );
                 } else {
                     for segment in &view.text_segments {
-                        x += renderer.draw_text(Point { x, y }, &segment.text, &segment.style);
+                        let remaining = (content_right - x).max(0.0);
+                        if remaining <= 0.0 {
+                            break;
+                        }
+                        x += renderer.draw_text_ellipsized(
+                            Rect {
+                                x,
+                                y,
+                                width: remaining,
+                                height: text_h,
+                            },
+                            &segment.text,
+                            &segment.style,
+                        );
                     }
                 }
             }
+
+            renderer.pop_clip();
         }
     }
 

@@ -56,6 +56,30 @@ pub trait Renderer {
     /// Draw text and return the width it occupied.
     fn draw_text(&mut self, pos: Point, text: &str, style: &TextStyle) -> f64;
 
+    /// Draw one line of text constrained to `rect`, using renderer-native
+    /// ellipsis when available.
+    fn draw_text_ellipsized(&mut self, rect: Rect, text: &str, style: &TextStyle) -> f64 {
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return 0.0;
+        }
+        self.draw_text(
+            Point {
+                x: rect.x,
+                y: rect.y,
+            },
+            text,
+            style,
+        )
+    }
+
+    /// Clip subsequent drawing to a rectangle until `pop_clip` is called.
+    fn push_clip(&mut self, rect: Rect) {
+        let _ = rect;
+    }
+
+    /// Restore the clip state saved by `push_clip`.
+    fn pop_clip(&mut self) {}
+
     /// Measure the width of text without drawing.
     fn measure_text(&self, text: &str, style: &TextStyle) -> f64;
 
