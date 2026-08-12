@@ -360,9 +360,33 @@ impl Config {
             }
         }
 
-        log::warn!("No config file found in any searched location, using bundled defaults");
+        // No config found anywhere: write the bundled default to the user's
+        // XDG config dir so they can edit it directly, then load from there
+        // (mirrors beewm's first-run behavior).
+        if let Some(path) = dirs_maybe() {
+            match write_default_config(&path) {
+                Ok(()) => log::info!("Wrote default config to {}", path.display()),
+                Err(error) => log::warn!(
+                    "Failed to write default config to {}: {}",
+                    path.display(),
+                    error
+                ),
+            }
+        } else {
+            log::warn!(
+                "Could not determine a config directory (no XDG_CONFIG_HOME or HOME set)"
+            );
+        }
+
         toml::from_str(BUNDLED_DEFAULT_CONFIG).expect("Failed to parse bundled default config")
     }
+}
+
+fn write_default_config(path: &PathBuf) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, BUNDLED_DEFAULT_CONFIG)
 }
 
 impl BarConfig {
