@@ -260,6 +260,11 @@ impl Bar {
         let Some(view) = self.module_view(id) else {
             return 0.0;
         };
+        // A module with nothing to show (e.g. the screencast indicator while
+        // nobody is recording) takes no space instead of an empty pill.
+        if view.icons.is_empty() && view.text.is_empty() && view.text_segments.is_empty() {
+            return 0.0;
+        }
         if !view.icons.is_empty() {
             let icon_size = view
                 .icon_size
@@ -299,23 +304,33 @@ pub fn render_bar<R: Renderer>(bar: &Bar, renderer: &mut R, width: u32, height: 
     let (pill_top, pill_h) = bar.pill_band();
     let groups = bar.compute_groups(width as f64, renderer);
 
-    // Pass 1: pill group backgrounds.
-    if let Some(group_bg) = bar.group_background {
-        for group in &groups {
-            if group.width <= 0.0 {
-                continue;
-            }
-            renderer.draw_rounded_rect(
-                Rect {
-                    x: group.x,
-                    y: pill_top,
-                    width: group.width,
-                    height: pill_h,
-                },
-                bar.corner_radius,
-                group_bg,
-            );
+    // Pass 1: pill group backgrounds. A module that fills its whole group
+    // (the only visible one in it) and has a background of its own, like the
+    // screen-capture indicator, recolors the pill instead of painting a square
+    // box over it, so it keeps the exact shape of every other pill.
+    let mut pill_owners: Vec<&ModuleId> = Vec::new();
+    for group in &groups {
+        if group.width <= 0.0 {
+            continue;
         }
+        let owned_bg = sole_visible_module(group).and_then(|region| {
+            let bg = bar.module_view(&region.id)?.background?;
+            pill_owners.push(&region.id);
+            Some(bg)
+        });
+        let Some(bg) = owned_bg.or(bar.group_background) else {
+            continue;
+        };
+        renderer.draw_rounded_rect(
+            Rect {
+                x: group.x,
+                y: pill_top,
+                width: group.width,
+                height: pill_h,
+            },
+            bar.corner_radius,
+            bg,
+        );
     }
 
     // Pass 2: modules. Per-module backgrounds (if set) draw inside the pill.
@@ -336,7 +351,9 @@ pub fn render_bar<R: Renderer>(bar: &Bar, renderer: &mut R, width: u32, height: 
             };
             renderer.push_clip(module_rect);
 
-            if let Some(bg) = view.background {
+            if let Some(bg) = view.background
+                && !pill_owners.contains(&&region.id)
+            {
                 renderer.draw_rect(module_rect, bg);
             }
 
@@ -401,6 +418,14 @@ pub fn render_bar<R: Renderer>(bar: &Bar, renderer: &mut R, width: u32, height: 
     renderer.end();
 }
 
+/// The module that fills `group` on its own: the only one in it with a
+/// non-zero width. `None` when several are visible (or none).
+fn sole_visible_module(group: &GroupRegion) -> Option<&ModuleRegion> {
+    let mut visible = group.modules.iter().filter(|region| region.width > 0.0);
+    let first = visible.next()?;
+    visible.next().is_none().then_some(first)
+}
+
 #[cfg(test)]
 mod tests {
     use super::Bar;
@@ -460,5 +485,34 @@ mod tests {
             styled.text_segments[1].style.color,
             Color::rgb(0.2, 0.4, 0.8)
         );
+    }
+
+    #[test]
+    fn a_module_alone_in_its_group_owns_the_pill() {
+        use super::sole_visible_module;
+        use crate::core::layout::{GroupRegion, ModuleRegion};
+        let region = |id: &str, width: f64| ModuleRegion {
+            id: id.into(),
+            x: 0.0,
+            width,
+        };
+        let alone = GroupRegion {
+            x: 0.0,
+            width: 80.0,
+            modules: vec![region("screencast", 80.0)],
+        };
+        let with_hidden = GroupRegion {
+            x: 0.0,
+            width: 80.0,
+            modules: vec![region("hidden", 0.0), region("screencast", 80.0)],
+        };
+        let shared = GroupRegion {
+            x: 0.0,
+            width: 160.0,
+            modules: vec![region("a", 80.0), region("b", 80.0)],
+        };
+        assert_eq!(sole_visible_module(&alone).unwrap().id, "screencast");
+        assert_eq!(sole_visible_module(&with_hidden).unwrap().id, "screencast");
+        assert!(sole_visible_module(&shared).is_none());
     }
 }

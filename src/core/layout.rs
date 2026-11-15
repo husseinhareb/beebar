@@ -65,12 +65,19 @@ impl BarLayout {
         let mut groups = Vec::new();
 
         // ── Left-aligned groups: laid out left-to-right from `margin_left`.
+        // Groups that measure zero wide (every module in them has nothing to
+        // show) get no gap either, so hiding one never leaves a hole.
         let mut x = spacing.margin_left;
-        for (i, group) in self.left.iter().enumerate() {
-            if i > 0 {
-                x += spacing.group_spacing;
+        let mut placed_left = false;
+        for group in &self.left {
+            let probe = build_group_region(0.0, group, measure_width);
+            if probe.width > 0.0 {
+                if placed_left {
+                    x += spacing.group_spacing;
+                }
+                placed_left = true;
             }
-            let region = build_group_region(x, group, measure_width);
+            let region = shift_group(probe, x);
             x += region.width;
             groups.push(region);
         }
@@ -78,15 +85,18 @@ impl BarLayout {
 
         // ── Right-aligned groups: laid out right-to-left from `margin_right`.
         let mut right_x = bar_width - spacing.margin_right;
-        for (i, group) in self.right.iter().enumerate().rev() {
-            // The visual gap between groups happens on the right side of the
-            // group we're about to place when there's already a group to its
-            // right (i.e. anything except the truly rightmost iteration).
-            if i < self.right.len().saturating_sub(1) {
-                right_x -= spacing.group_spacing;
-            }
+        let mut placed_right = false;
+        for group in self.right.iter().rev() {
             // Compute width by measuring at a temporary anchor, then shift.
             let probe = build_group_region(0.0, group, measure_width);
+            // The visual gap goes on the right side of the group we're about to
+            // place, when a visible group already sits to its right.
+            if probe.width > 0.0 {
+                if placed_right {
+                    right_x -= spacing.group_spacing;
+                }
+                placed_right = true;
+            }
             right_x -= probe.width;
             groups.push(shift_group(probe, right_x));
         }
@@ -101,12 +111,12 @@ impl BarLayout {
             .map(|g| build_group_region(0.0, g, measure_width))
             .collect();
 
-        let lane_start = if self.left.is_empty() {
+        let lane_start = if !placed_left {
             spacing.margin_left
         } else {
             left_edge + spacing.group_spacing
         };
-        let lane_end = if self.right.is_empty() {
+        let lane_end = if !placed_right {
             bar_width - spacing.margin_right
         } else {
             right_edge - spacing.group_spacing
@@ -217,6 +227,7 @@ mod tests {
             "center-small" => 200.0,
             "right" => 220.0,
             "right-wide" => 350.0,
+            "hidden" => 0.0,
             other => panic!("unexpected module id: {other}"),
         }
     }
@@ -281,5 +292,23 @@ mod tests {
         assert_eq!(center.x, 230.0);
         assert_eq!(center.width, 200.0);
         assert_eq!(center.x + center.width, 430.0);
+    }
+
+    #[test]
+    fn a_hidden_group_leaves_no_gap() {
+        // The tray-side group stays flush with the margin while the indicator
+        // to its right has nothing to show, and the left side likewise.
+        let layout = BarLayout {
+            left: vec![vec!["hidden".into()], vec!["left".into()]],
+            center: vec![],
+            right: vec![vec!["right".into()], vec!["hidden".into()]],
+        };
+
+        let groups = layout.compute(1000.0, spacing(), &|id| width_for(id));
+        let right = group_with(&groups, "right");
+        let left = group_with(&groups, "left");
+
+        assert_eq!(right.x + right.width, 990.0);
+        assert_eq!(left.x, 10.0);
     }
 }

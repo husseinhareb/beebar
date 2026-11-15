@@ -256,6 +256,7 @@ dependencies = [
  "pango",
  "pangocairo",
  "serde",
+ "serde_json",
  "smithay-client-toolkit",
  "sysinfo",
  "tokio",

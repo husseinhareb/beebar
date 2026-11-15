@@ -506,7 +506,13 @@ fn draw_popup_frame(
         .expect("Failed to create Wayland popup buffer");
 
     popup.renderer.begin(width, height);
-    draw_popup(&mut popup.renderer, &popup.menu, &popup.layout, text_style, popup.hovered_item);
+    draw_popup(
+        &mut popup.renderer,
+        &popup.menu,
+        &popup.layout,
+        text_style,
+        popup.hovered_item,
+    );
     popup.renderer.end();
 
     let data = popup.renderer.data();
@@ -758,9 +764,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 // Update hover highlight when pointer moves over the popup.
                 if state.pointer_focus == PointerFocus::Popup {
                     let hover_changed = if let Some(popup) = state.popup.as_mut() {
-                        let new_hover = popup
-                            .layout
-                            .hit_test(&popup.menu.items, surface_x, surface_y);
+                        let new_hover =
+                            popup
+                                .layout
+                                .hit_test(&popup.menu.items, surface_x, surface_y);
                         let changed = new_hover != popup.hovered_item;
                         popup.hovered_item = new_hover;
                         changed

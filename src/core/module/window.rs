@@ -37,10 +37,7 @@ impl Source {
             Some("hyprland") | Some("hypr") => Self::Hyprland,
             Some("auto") | None => Self::Auto,
             Some(other) => {
-                log::warn!(
-                    "Unknown window module backend '{}'; using 'auto'",
-                    other
-                );
+                log::warn!("Unknown window module backend '{}'; using 'auto'", other);
                 Self::Auto
             }
         }
@@ -116,8 +113,7 @@ impl Module for WindowModule {
     fn update(&mut self) {
         // The beewm path is driven by the subscriber thread; nothing to poll.
         // Hyprland still needs a per-tick query because it has no event socket.
-        if matches!(self.source, Source::Hyprland | Source::Auto)
-            && self.beewm_snapshot().is_none()
+        if matches!(self.source, Source::Hyprland | Source::Auto) && self.beewm_snapshot().is_none()
         {
             self.refresh_hyprland();
         }
@@ -196,7 +192,7 @@ fn handle_event_line(line: &str, shared: &Arc<Mutex<Option<String>>>) {
     }
 }
 
-fn event_socket_path() -> PathBuf {
+pub(super) fn event_socket_path() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

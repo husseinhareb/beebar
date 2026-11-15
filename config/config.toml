@@ -40,6 +40,7 @@ groups_right = [
     ["temperature", "battery"],
     ["brightness", "volume", "microphone"],
     ["tray"],
+    ["screencast"],
 ]
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
@@ -209,3 +210,11 @@ icon_size     = 18
 padding_left  = 8.0
 padding_right = 8.0
 icon_spacing  = 8.0
+
+# Red pill naming whoever is capturing the screen (beewm only). Hidden while
+# nothing is. Apps sharing through the portal are looked up with pw-dump.
+[module.screencast]
+type = "screencast"
+# icon       = "\u25CF"      # the recording dot
+# background = "#d20f39"
+# foreground = "#fefefe"

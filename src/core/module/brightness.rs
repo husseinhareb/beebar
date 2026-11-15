@@ -621,7 +621,10 @@ fn resolve_sysfs_device(preferred: Option<&str>) -> Option<std::path::PathBuf> {
             return Some(path);
         }
     }
-    let mut entries: Vec<_> = std::fs::read_dir(&root).ok()?.filter_map(Result::ok).collect();
+    let mut entries: Vec<_> = std::fs::read_dir(&root)
+        .ok()?
+        .filter_map(Result::ok)
+        .collect();
     entries.sort_by_key(|e| e.file_name());
     let first = entries.into_iter().next()?;
     Some(first.path())
@@ -645,7 +648,9 @@ fn read_sysfs_state(device: Option<&str>) -> Result<BrightnessState, String> {
     if max == 0 {
         return Err("max_brightness is 0".to_string());
     }
-    let percent = ((cur as f64 / max as f64) * 100.0).round().clamp(0.0, 100.0) as u16;
+    let percent = ((cur as f64 / max as f64) * 100.0)
+        .round()
+        .clamp(0.0, 100.0) as u16;
     Ok(BrightnessState {
         brightness_percent: percent,
     })

@@ -373,9 +373,7 @@ impl Config {
                 ),
             }
         } else {
-            log::warn!(
-                "Could not determine a config directory (no XDG_CONFIG_HOME or HOME set)"
-            );
+            log::warn!("Could not determine a config directory (no XDG_CONFIG_HOME or HOME set)");
         }
 
         toml::from_str(BUNDLED_DEFAULT_CONFIG).expect("Failed to parse bundled default config")
@@ -461,11 +459,7 @@ impl BarConfig {
 
 fn effective_groups(groups: &[Vec<String>], flat: &[String]) -> Vec<Vec<String>> {
     if !groups.is_empty() {
-        groups
-            .iter()
-            .filter(|g| !g.is_empty())
-            .cloned()
-            .collect()
+        groups.iter().filter(|g| !g.is_empty()).cloned().collect()
     } else {
         flat.iter().map(|m| vec![m.clone()]).collect()
     }

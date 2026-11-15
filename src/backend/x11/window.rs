@@ -273,8 +273,7 @@ pub fn run_x11(bar: &mut Bar) {
         if let Some((mx, my, event_win)) = last_motion {
             if let Some(p) = popup.as_mut() {
                 if event_win == p.win {
-                    let new_hover =
-                        p.layout.hit_test(&p.menu.items, mx as f64, my as f64);
+                    let new_hover = p.layout.hit_test(&p.menu.items, mx as f64, my as f64);
                     if new_hover != p.hovered_item {
                         p.hovered_item = new_hover;
                         render_popup_window(&conn, p, &bar.text_style, screen.root_depth);
@@ -463,7 +462,13 @@ fn render_popup_window(
     let width = popup.layout.pixel_width();
     let height = popup.layout.pixel_height();
     popup.renderer.begin(width, height);
-    draw_popup(&mut popup.renderer, &popup.menu, &popup.layout, text_style, popup.hovered_item);
+    draw_popup(
+        &mut popup.renderer,
+        &popup.menu,
+        &popup.layout,
+        text_style,
+        popup.hovered_item,
+    );
     popup.renderer.end();
 
     conn.put_image(

@@ -529,8 +529,16 @@ impl Module for VolumeModule {
             color: self.style.muted_color,
             ..base_style.clone()
         };
-        let label_style = if self.muted { muted_style.clone() } else { base_style.clone() };
-        let percent_style = if self.muted { muted_style.clone() } else { base_style.clone() };
+        let label_style = if self.muted {
+            muted_style.clone()
+        } else {
+            base_style.clone()
+        };
+        let percent_style = if self.muted {
+            muted_style.clone()
+        } else {
+            base_style.clone()
+        };
 
         let icon_slot = self.icon_slot();
         let icon_gap = self.icon_gap();

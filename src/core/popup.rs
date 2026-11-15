@@ -255,9 +255,7 @@ pub fn draw_popup<R: Renderer>(
                     Rect {
                         x: POPUP_BORDER + POPUP_HORIZONTAL_PADDING,
                         y: row_y + (row_h - 1.0) / 2.0,
-                        width: layout.width
-                            - POPUP_BORDER * 2.0
-                            - POPUP_HORIZONTAL_PADDING * 2.0,
+                        width: layout.width - POPUP_BORDER * 2.0 - POPUP_HORIZONTAL_PADDING * 2.0,
                         height: 1.0,
                     },
                     POPUP_SEPARATOR_COLOR,
@@ -295,10 +293,7 @@ pub fn draw_popup<R: Renderer>(
                     let glyph_w = renderer.measure_text(glyph, &item_style);
                     renderer.draw_text(
                         Point {
-                            x: layout.width
-                                - POPUP_BORDER
-                                - POPUP_HORIZONTAL_PADDING
-                                - glyph_w,
+                            x: layout.width - POPUP_BORDER - POPUP_HORIZONTAL_PADDING - glyph_w,
                             y: row_y + layout.text_y_offset,
                         },
                         glyph,

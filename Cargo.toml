@@ -23,6 +23,7 @@ pango = "0.20"
 # Config
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+serde_json = "1"
 
 # Misc system
 libc = "0.2"

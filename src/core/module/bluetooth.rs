@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::runtime::Runtime;
-use zbus::{Connection, fdo};
 use zbus::zvariant::OwnedValue;
+use zbus::{Connection, fdo};
 
 use super::{Module, ModuleChrome, ModuleView};
 use crate::renderer::primitives::TextStyle;
@@ -101,9 +101,7 @@ impl Module for BluetoothModule {
         };
 
         let text = match &self.format {
-            Some(fmt) => fmt
-                .replace("{icon}", icon)
-                .replace("{status}", &status),
+            Some(fmt) => fmt.replace("{icon}", icon).replace("{status}", &status),
             None => format!("{icon} {status}"),
         };
 
@@ -178,8 +176,8 @@ async fn poll_once() -> zbus::Result<BluetoothState> {
         if let Some(device) = ifaces.get("org.bluez.Device1") {
             if get_bool(device, "Connected").unwrap_or(false) {
                 if connected_alias.is_none() {
-                    connected_alias = get_string(device, "Alias")
-                        .or_else(|| get_string(device, "Name"));
+                    connected_alias =
+                        get_string(device, "Alias").or_else(|| get_string(device, "Name"));
                 }
             }
         }
@@ -196,17 +194,11 @@ async fn poll_once() -> zbus::Result<BluetoothState> {
     }
 }
 
-fn get_bool(
-    props: &std::collections::HashMap<String, OwnedValue>,
-    key: &str,
-) -> Option<bool> {
+fn get_bool(props: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
     props.get(key).and_then(|v| bool::try_from(v).ok())
 }
 
-fn get_string(
-    props: &std::collections::HashMap<String, OwnedValue>,
-    key: &str,
-) -> Option<String> {
+fn get_string(props: &std::collections::HashMap<String, OwnedValue>, key: &str) -> Option<String> {
     props
         .get(key)
         .and_then(|v| v.try_clone().ok())

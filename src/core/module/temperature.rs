@@ -176,15 +176,16 @@ impl TemperatureModule {
     }
 
     fn find_temperature(&self) -> Option<TemperatureState> {
-        let matching = self.components.iter().filter(|component| {
-            match &self.sensor {
+        let matching = self
+            .components
+            .iter()
+            .filter(|component| match &self.sensor {
                 Some(filter) => component
                     .label()
                     .to_ascii_lowercase()
                     .contains(&filter.to_ascii_lowercase()),
                 None => true,
-            }
-        });
+            });
 
         // Pick the component with the highest current temperature among matches,
         // which is typically the most relevant reading (e.g. CPU package temp).
@@ -349,10 +350,7 @@ mod tests {
 
     #[test]
     fn renders_custom_format() {
-        let mut module = make_module(
-            Some("{icon} {temp}°C (max: {max}°C)".to_string()),
-            None,
-        );
+        let mut module = make_module(Some("{icon} {temp}°C (max: {max}°C)".to_string()), None);
         module.state = Some(TemperatureState {
             current: 55.0,
             max: Some(90.0),
@@ -452,10 +450,7 @@ mod tests {
 
     #[test]
     fn missing_max_and_critical_render_as_dashes() {
-        let mut module = make_module(
-            Some("{temp} max:{max} crit:{critical}".to_string()),
-            None,
-        );
+        let mut module = make_module(Some("{temp} max:{max} crit:{critical}".to_string()), None);
         module.state = Some(TemperatureState {
             current: 50.0,
             max: None,

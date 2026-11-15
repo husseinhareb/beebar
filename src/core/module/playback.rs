@@ -194,11 +194,21 @@ impl Default for PlaybackButtonIcons {
 impl PlaybackButtonIcons {
     pub fn from_config(config: &crate::core::config::ModuleConfig) -> Self {
         let mut icons = Self::default();
-        if let Some(v) = &config.icon_previous { icons.previous = v.clone(); }
-        if let Some(v) = &config.icon_stop     { icons.stop     = v.clone(); }
-        if let Some(v) = &config.icon_play     { icons.play     = v.clone(); }
-        if let Some(v) = &config.icon_pause    { icons.pause    = v.clone(); }
-        if let Some(v) = &config.icon_next     { icons.next     = v.clone(); }
+        if let Some(v) = &config.icon_previous {
+            icons.previous = v.clone();
+        }
+        if let Some(v) = &config.icon_stop {
+            icons.stop = v.clone();
+        }
+        if let Some(v) = &config.icon_play {
+            icons.play = v.clone();
+        }
+        if let Some(v) = &config.icon_pause {
+            icons.pause = v.clone();
+        }
+        if let Some(v) = &config.icon_next {
+            icons.next = v.clone();
+        }
         icons
     }
 }
@@ -334,7 +344,8 @@ impl PlaybackModule {
                 player: player.player_name.clone(),
                 status: player.status.label().to_string(),
                 buttons: if player.has_visible_controls() {
-                    PlaybackButtons::from_status_with_icons(player.status, &self.button_icons).text()
+                    PlaybackButtons::from_status_with_icons(player.status, &self.button_icons)
+                        .text()
                 } else {
                     String::new()
                 },
@@ -728,7 +739,13 @@ mod tests {
     }
 
     fn module_with_player(format: Option<String>) -> PlaybackModule {
-        let mut module = PlaybackModule::new(format, None, None, default_chrome(), PlaybackButtonIcons::default());
+        let mut module = PlaybackModule::new(
+            format,
+            None,
+            None,
+            default_chrome(),
+            PlaybackButtonIcons::default(),
+        );
         module.state = PlaybackViewState::Player(player_state());
         module
     }
@@ -797,7 +814,13 @@ mod tests {
 
     #[test]
     fn uses_configured_icon() {
-        let mut module = PlaybackModule::new(None, Some("NOW".to_string()), None, default_chrome(), PlaybackButtonIcons::default());
+        let mut module = PlaybackModule::new(
+            None,
+            Some("NOW".to_string()),
+            None,
+            default_chrome(),
+            PlaybackButtonIcons::default(),
+        );
         module.state = PlaybackViewState::Player(player_state());
 
         assert!(module.view().text.starts_with("NOW "));
@@ -819,7 +842,13 @@ mod tests {
 
     #[test]
     fn strips_button_gap_when_buttons_are_absent() {
-        let module = PlaybackModule::new(None, None, None, default_chrome(), PlaybackButtonIcons::default());
+        let module = PlaybackModule::new(
+            None,
+            None,
+            None,
+            default_chrome(),
+            PlaybackButtonIcons::default(),
+        );
 
         assert_eq!(module.view().text, "󰎈 no media");
     }

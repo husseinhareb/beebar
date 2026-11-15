@@ -54,7 +54,8 @@ pub struct BatteryModule {
 
 impl BatteryModule {
     pub fn new(icons: BatteryIcons, chrome: ModuleChrome, device: Option<String>) -> Self {
-        let detected = device.unwrap_or_else(|| Self::detect_battery().unwrap_or_else(|| "BAT0".to_string()));
+        let detected =
+            device.unwrap_or_else(|| Self::detect_battery().unwrap_or_else(|| "BAT0".to_string()));
         Self {
             capacity: 0,
             status: String::from("Unknown"),

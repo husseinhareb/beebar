@@ -7,6 +7,7 @@ pub mod custom;
 pub mod memory;
 pub mod network;
 pub mod playback;
+pub mod screencast;
 pub mod temperature;
 pub mod tray;
 pub mod volume;
@@ -252,4 +253,3 @@ pub trait Module: Send {
     /// Dismiss the module popup, if any.
     fn dismiss_popup(&mut self) {}
 }
-

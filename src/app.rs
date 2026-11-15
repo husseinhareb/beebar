@@ -1,6 +1,6 @@
 use crate::core::bar::Bar;
-use crate::core::config::Config;
 use crate::core::config::BarConfig;
+use crate::core::config::Config;
 use crate::core::config::ModuleConfig;
 use crate::core::layout::Alignment;
 use crate::core::module::ModuleChrome;
@@ -15,6 +15,7 @@ use crate::core::module::custom::CustomModule;
 use crate::core::module::memory::MemoryModule;
 use crate::core::module::network::NetworkModule;
 use crate::core::module::playback::{PlaybackButtonIcons, PlaybackModule};
+use crate::core::module::screencast::ScreencastModule;
 use crate::core::module::temperature::TemperatureIcons;
 use crate::core::module::temperature::TemperatureModule;
 use crate::core::module::tray::TrayModule;
@@ -103,6 +104,7 @@ fn build_module(
             let size = mcfg.icon_size.unwrap_or(22);
             Some(Box::new(TrayModule::new(size, chrome)))
         }
+        "screencast" => Some(Box::new(ScreencastModule::new(mcfg.icon.clone(), chrome))),
         "window" => Some(Box::new(WindowModule::new(
             mcfg.backend.clone(),
             mcfg.max_length,
