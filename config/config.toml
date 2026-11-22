@@ -126,6 +126,9 @@ foreground = "#89dceb"
 type = "temperature"
 refresh_interval_ms = 1000
 icon = "󰔏"            # 󰔏 = nf-md-thermometer
+# The CPU sensor is detected automatically (k10temp, zenpower, coretemp, cpu_thermal).
+# Set `sensor` to force a different one by label substring, e.g. "amdgpu junction".
+# sensor = "k10temp"
 warn_threshold     = 75.0
 critical_threshold = 90.0
 warn_color     = "#f9e2af"

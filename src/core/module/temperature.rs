@@ -176,32 +176,132 @@ impl TemperatureModule {
     }
 
     fn find_temperature(&self) -> Option<TemperatureState> {
-        let matching = self
+        let readings: Vec<SensorReading> = self
             .components
             .iter()
-            .filter(|component| match &self.sensor {
-                Some(filter) => component
-                    .label()
-                    .to_ascii_lowercase()
-                    .contains(&filter.to_ascii_lowercase()),
-                None => true,
-            });
+            .map(|component| SensorReading {
+                label: component.label().to_ascii_lowercase(),
+                current: component.temperature(),
+                max: Some(component.max()).filter(|v| v.is_finite()),
+                critical: component.critical().filter(|v| v.is_finite()),
+            })
+            .filter(|reading| reading.current.is_finite())
+            .collect();
 
-        // Pick the component with the highest current temperature among matches,
-        // which is typically the most relevant reading (e.g. CPU package temp).
-        let best = matching.max_by(|a, b| {
-            let ta = a.temperature();
-            let tb = b.temperature();
-            ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
-        })?;
+        let best = match &self.sensor {
+            Some(filter) => select_by_filter(&readings, filter),
+            None => select_cpu_sensor(&readings),
+        }?;
 
-        let current = best.temperature();
         Some(TemperatureState {
-            current,
-            max: Some(best.max()),
-            critical: best.critical(),
+            current: best.current,
+            max: best.max,
+            critical: best.critical,
         })
     }
+}
+
+/// One temperature channel as reported by sysinfo. sysinfo labels hwmon
+/// channels as `"<driver> <channel label>"`, e.g. `"k10temp tctl"`,
+/// `"coretemp package id 0"` or `"amdgpu junction"`. Labels are lowercased.
+#[derive(Debug, Clone)]
+struct SensorReading {
+    label: String,
+    current: f32,
+    max: Option<f32>,
+    critical: Option<f32>,
+}
+
+impl SensorReading {
+    /// The channel part of the label when it belongs to `driver`, or `None`.
+    fn channel_of(&self, driver: &str) -> Option<&str> {
+        let rest = self.label.strip_prefix(driver)?;
+        if rest.is_empty() {
+            Some("")
+        } else {
+            rest.strip_prefix(' ')
+        }
+    }
+}
+
+/// CPU hwmon drivers in order of preference, each with the channels that
+/// represent the whole CPU (most accurate first). If none of the preferred
+/// channels exist, the hottest channel of that driver is used (e.g. the
+/// hottest `Core N` on coretemp, or a `Tccd` on k10temp).
+const CPU_SENSORS: &[(&str, &[&str])] = &[
+    // AMD: Tdie is the real die temperature, Tctl may carry a fan-control offset.
+    ("k10temp", &["tdie", "tctl"]),
+    ("zenpower", &["tdie", "tctl"]),
+    // Intel: the package sensor covers all cores.
+    ("coretemp", &["package id"]),
+    // ARM SoCs (Raspberry Pi, many SBCs and laptops).
+    ("cpu_thermal", &[]),
+    ("cpu-thermal", &[]),
+    ("soc_thermal", &[]),
+];
+
+/// Drivers that are never the CPU. Used only by the last-resort fallback so a
+/// busy GPU, SSD or wifi card is not reported as the CPU temperature.
+const NON_CPU_DRIVERS: &[&str] = &[
+    "amdgpu",
+    "radeon",
+    "nouveau",
+    "nvidia",
+    "i915",
+    "xe",
+    "nvme",
+    "drivetemp",
+    "iwlwifi",
+    "ath",
+    "mt79",
+    "spd5118",
+    "jc42",
+    "bat",
+];
+
+fn hottest<'a>(readings: impl Iterator<Item = &'a SensorReading>) -> Option<&'a SensorReading> {
+    readings.max_by(|a, b| a.current.total_cmp(&b.current))
+}
+
+/// Pick the hottest channel whose label contains the user's `sensor` filter.
+fn select_by_filter<'a>(readings: &'a [SensorReading], filter: &str) -> Option<&'a SensorReading> {
+    let filter = filter.to_ascii_lowercase();
+    hottest(readings.iter().filter(|r| r.label.contains(&filter)))
+}
+
+/// Pick the reading that best represents the CPU temperature.
+fn select_cpu_sensor(readings: &[SensorReading]) -> Option<&SensorReading> {
+    for (driver, preferred) in CPU_SENSORS {
+        let driver_readings: Vec<(&SensorReading, &str)> = readings
+            .iter()
+            .filter_map(|r| r.channel_of(driver).map(|channel| (r, channel)))
+            .collect();
+        if driver_readings.is_empty() {
+            continue;
+        }
+
+        for channel in *preferred {
+            let found = hottest(
+                driver_readings
+                    .iter()
+                    .filter(|(_, c)| c.starts_with(channel))
+                    .map(|(r, _)| *r),
+            );
+            if found.is_some() {
+                return found;
+            }
+        }
+
+        return hottest(driver_readings.iter().map(|(r, _)| *r));
+    }
+
+    // No known CPU driver: use the hottest sensor that is not a known
+    // non-CPU device (this is usually an ACPI or motherboard CPU zone).
+    hottest(
+        readings
+            .iter()
+            .filter(|r| !NON_CPU_DRIVERS.iter().any(|d| r.label.starts_with(d))),
+    )
 }
 
 impl Module for TemperatureModule {
@@ -470,5 +570,96 @@ mod tests {
         });
 
         assert_eq!(module.view().text, "   42°C  ");
+    }
+
+    fn reading(label: &str, current: f32) -> SensorReading {
+        SensorReading {
+            label: label.to_ascii_lowercase(),
+            current,
+            max: None,
+            critical: None,
+        }
+    }
+
+    #[test]
+    fn prefers_amd_cpu_over_hotter_gpu() {
+        let readings = vec![
+            reading("amdgpu junction", 95.0),
+            reading("amdgpu edge", 80.0),
+            reading("nvme Composite", 60.0),
+            reading("k10temp Tctl", 56.0),
+            reading("acpitz temp1", 16.0),
+        ];
+
+        assert_eq!(select_cpu_sensor(&readings).unwrap().label, "k10temp tctl");
+    }
+
+    #[test]
+    fn prefers_tdie_over_tctl_and_ccd() {
+        let readings = vec![
+            reading("k10temp Tctl", 70.0),
+            reading("k10temp Tccd1", 75.0),
+            reading("k10temp Tdie", 60.0),
+        ];
+
+        assert_eq!(select_cpu_sensor(&readings).unwrap().label, "k10temp tdie");
+    }
+
+    #[test]
+    fn prefers_intel_package_over_cores() {
+        let readings = vec![
+            reading("coretemp Core 0", 70.0),
+            reading("coretemp Package id 0", 65.0),
+            reading("nouveau temp1", 90.0),
+        ];
+
+        assert_eq!(
+            select_cpu_sensor(&readings).unwrap().label,
+            "coretemp package id 0"
+        );
+    }
+
+    #[test]
+    fn uses_hottest_core_without_package_sensor() {
+        let readings = vec![
+            reading("coretemp Core 0", 50.0),
+            reading("coretemp Core 1", 58.0),
+        ];
+
+        assert_eq!(
+            select_cpu_sensor(&readings).unwrap().label,
+            "coretemp core 1"
+        );
+    }
+
+    #[test]
+    fn fallback_skips_non_cpu_devices() {
+        let readings = vec![
+            reading("amdgpu junction", 90.0),
+            reading("nvme Composite", 40.0),
+            reading("acpitz temp1", 45.0),
+        ];
+
+        assert_eq!(select_cpu_sensor(&readings).unwrap().label, "acpitz temp1");
+    }
+
+    #[test]
+    fn explicit_sensor_filter_overrides_cpu_detection() {
+        let readings = vec![
+            reading("k10temp Tctl", 56.0),
+            reading("amdgpu junction", 47.0),
+        ];
+
+        assert_eq!(
+            select_by_filter(&readings, "Junction").unwrap().label,
+            "amdgpu junction"
+        );
+    }
+
+    #[test]
+    fn driver_prefix_must_match_whole_word() {
+        let reading = reading("k10temp_extra Tctl", 50.0);
+
+        assert!(reading.channel_of("k10temp").is_none());
     }
 }
