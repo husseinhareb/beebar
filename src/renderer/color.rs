@@ -39,6 +39,22 @@ impl Color {
         })
     }
 
+    /// Linear blend towards `other` by `t` (0.0 keeps `self`, 1.0 gives
+    /// `other`). Alpha is blended too.
+    pub fn mix(self, other: Self, t: f64) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        Self {
+            r: self.r + (other.r - self.r) * t,
+            g: self.g + (other.g - self.g) * t,
+            b: self.b + (other.b - self.b) * t,
+            a: self.a + (other.a - self.a) * t,
+        }
+    }
+
+    pub fn with_alpha(self, a: f64) -> Self {
+        Self { a, ..self }
+    }
+
     // Some useful defaults
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);

@@ -14,6 +14,20 @@ fn build_font_desc(style: &TextStyle) -> FontDescription {
     font_desc
 }
 
+/// Horizontal extent of everything `layout` paints: the logical box widened
+/// to include glyph ink that overhangs it (many Nerd Font icons are wider than
+/// their advance width). Returns (how far the ink starts left of the logical
+/// box, total width).
+fn horizontal_extent(layout: &pango::Layout) -> (f64, f64) {
+    let (ink, logical) = layout.pixel_extents();
+    if ink.width() <= 0 {
+        return (0.0, logical.width() as f64);
+    }
+    let left = ink.x().min(logical.x());
+    let right = (ink.x() + ink.width()).max(logical.x() + logical.width());
+    ((logical.x() - left) as f64, (right - left) as f64)
+}
+
 /// Cairo + Pango based renderer. Draws to an in-memory image surface.
 pub struct CairoRenderer {
     surface: ImageSurface,
@@ -92,12 +106,12 @@ impl Renderer for CairoRenderer {
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
 
+        let (overhang, width) = horizontal_extent(&layout);
         cr.set_source_rgba(style.color.r, style.color.g, style.color.b, style.color.a);
-        cr.move_to(pos.x, pos.y);
+        cr.move_to(pos.x + overhang, pos.y);
         pangocairo::show_layout(cr, &layout);
 
-        let (w, _) = layout.pixel_size();
-        w as f64
+        width
     }
 
     fn draw_text_ellipsized(&mut self, rect: Rect, text: &str, style: &TextStyle) -> f64 {
@@ -114,12 +128,12 @@ impl Renderer for CairoRenderer {
         layout.set_ellipsize(EllipsizeMode::End);
         layout.set_single_paragraph_mode(true);
 
+        let (overhang, width) = horizontal_extent(&layout);
         cr.set_source_rgba(style.color.r, style.color.g, style.color.b, style.color.a);
-        cr.move_to(rect.x, rect.y);
+        cr.move_to(rect.x + overhang, rect.y);
         pangocairo::show_layout(cr, &layout);
 
-        let (w, _) = layout.pixel_size();
-        (w as f64).min(rect.width)
+        width.min(rect.width)
     }
 
     fn push_clip(&mut self, rect: Rect) {
@@ -129,6 +143,25 @@ impl Renderer for CairoRenderer {
             cr.rectangle(rect.x, rect.y, 0.0, 0.0);
         } else {
             cr.rectangle(rect.x, rect.y, rect.width, rect.height);
+        }
+        cr.clip();
+    }
+
+    fn push_rounded_clip(&mut self, rect: Rect, radius: f64) {
+        let cr = self.cr.as_ref().expect("call begin() first");
+        cr.save().ok();
+        let r = radius.max(0.0).min(rect.width / 2.0).min(rect.height / 2.0);
+        if r <= 0.0 || rect.width <= 0.0 || rect.height <= 0.0 {
+            cr.rectangle(rect.x, rect.y, rect.width.max(0.0), rect.height.max(0.0));
+        } else {
+            use std::f64::consts::PI;
+            let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
+            cr.new_sub_path();
+            cr.arc(x + w - r, y + r, r, -PI / 2.0, 0.0);
+            cr.arc(x + w - r, y + h - r, r, 0.0, PI / 2.0);
+            cr.arc(x + r, y + h - r, r, PI / 2.0, PI);
+            cr.arc(x + r, y + r, r, PI, 3.0 * PI / 2.0);
+            cr.close_path();
         }
         cr.clip();
     }
@@ -153,8 +186,7 @@ impl Renderer for CairoRenderer {
         let font_desc = build_font_desc(style);
         layout.set_font_description(Some(&font_desc));
         layout.set_text(text);
-        let (w, _) = layout.pixel_size();
-        w as f64
+        horizontal_extent(&layout).1
     }
 
     fn measure_text_height(&self, text: &str, style: &TextStyle) -> f64 {

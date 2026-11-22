@@ -77,6 +77,12 @@ pub trait Renderer {
         let _ = rect;
     }
 
+    /// Like `push_clip`, with rounded corners. Defaults to a square clip.
+    fn push_rounded_clip(&mut self, rect: Rect, radius: f64) {
+        let _ = radius;
+        self.push_clip(rect);
+    }
+
     /// Restore the clip state saved by `push_clip`.
     fn pop_clip(&mut self) {}
 

@@ -33,7 +33,7 @@ use zbus::{
 
 use super::{IconData, Module, ModuleChrome, ModuleView};
 use crate::core::event::{ClickEvent, MouseButton};
-use crate::core::popup::{PopupItemKind, PopupMenu, PopupMenuItem};
+use crate::core::popup::{Popup, PopupHit, PopupItemKind, PopupMenu, PopupMenuItem};
 use crate::renderer::primitives::TextStyle;
 
 // ─── DBus proxy for a StatusNotifierItem ────────────────────────────────────
@@ -1301,7 +1301,7 @@ impl Module for TrayModule {
         })
     }
 
-    fn popup(&self) -> Option<PopupMenu> {
+    fn popup(&self) -> Option<Popup> {
         let menu = self.inline_menu.lock().unwrap().clone()?;
         let mut items: Vec<PopupMenuItem> = Vec::new();
 
@@ -1331,16 +1331,17 @@ impl Module for TrayModule {
             },
         }));
 
-        Some(PopupMenu {
+        Some(Popup::Menu(PopupMenu {
             anchor_x: menu.anchor_x,
             items,
-        })
+        }))
     }
 
-    fn popup_click(&mut self, item_index: usize, button: MouseButton) {
+    fn popup_click(&mut self, hit: PopupHit, button: MouseButton) {
         if button != MouseButton::Left {
             return;
         }
+        let item_index = hit.index;
 
         // Borrow the menu mutably so we can either replace it (drill-in) or
         // take it (action/checkbox triggers a real DBus event and dismisses).

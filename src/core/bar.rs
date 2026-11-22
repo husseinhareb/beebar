@@ -4,7 +4,7 @@ use std::time::Instant;
 use super::event::ClickEvent;
 use super::layout::{BarLayout, GroupRegion, LayoutSpacing, ModuleRegion};
 use super::module::{Module, ModuleId, ModuleView};
-use super::popup::PopupMenu;
+use super::popup::{Popup, PopupHit};
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer, TextStyle};
 
@@ -195,7 +195,7 @@ impl Bar {
         }
     }
 
-    pub fn active_popup(&self) -> Option<(ModuleId, PopupMenu)> {
+    pub fn active_popup(&self) -> Option<(ModuleId, Popup)> {
         for id in self
             .layout
             .left
@@ -218,11 +218,11 @@ impl Bar {
     pub fn handle_popup_click(
         &mut self,
         id: &ModuleId,
-        item_index: usize,
+        hit: PopupHit,
         button: crate::core::event::MouseButton,
     ) {
         if let Some(module) = self.modules.get_mut(id) {
-            module.popup_click(item_index, button);
+            module.popup_click(hit, button);
         }
     }
 

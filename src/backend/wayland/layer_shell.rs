@@ -17,14 +17,14 @@ use std::os::unix::io::AsRawFd;
 use wayland_client::{
     Connection, Dispatch, QueueHandle, WEnum,
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat},
 };
 
 use crate::core::bar::{Bar, render_bar};
 use crate::core::event::{ClickEvent, MouseButton};
 use crate::core::layout::BarLayout;
 use crate::core::module::ModuleId;
-use crate::core::popup::{POPUP_GAP, PopupLayout, PopupMenu, draw_popup, layout_popup};
+use crate::core::popup::{POPUP_GAP, Popup, PopupLayout, draw_popup, layout_popup};
 use crate::renderer::cairo_renderer::CairoRenderer;
 use crate::renderer::primitives::Renderer;
 
@@ -41,7 +41,7 @@ struct PopupSurfaceState {
     pool: SlotPool,
     renderer: CairoRenderer,
     owner: ModuleId,
-    menu: PopupMenu,
+    content: Popup,
     layout: PopupLayout,
     configured: bool,
     hovered_item: Option<usize>,
@@ -79,9 +79,13 @@ struct WaylandState {
     needs_redraw: bool,
     /// Raw Wayland pointer object (kept alive to receive events).
     pointer: Option<wl_pointer::WlPointer>,
+    /// Raw Wayland keyboard, used to close popups with Escape.
+    keyboard: Option<wl_keyboard::WlKeyboard>,
     /// Last known pointer position on our bar surface.
     pointer_pos: (f64, f64),
     pointer_focus: PointerFocus,
+    /// Popup element (a panel slider) being dragged with the left button.
+    drag: Option<usize>,
 }
 
 pub fn run_layer_shell(bar: &mut Bar) {
@@ -159,8 +163,10 @@ pub fn run_layer_shell(bar: &mut Bar) {
         exit: false,
         needs_redraw: false,
         pointer: None,
+        keyboard: None,
         pointer_pos: (0.0, 0.0),
         pointer_focus: PointerFocus::None,
+        drag: None,
     };
 
     // Do a full roundtrip so the compositor processes our layer_surface.commit
@@ -315,24 +321,24 @@ fn draw_frame(state: &mut WaylandState) {
 }
 
 fn sync_popup_surface(state: &mut WaylandState) {
-    let active_popup = state.bar.active_popup().and_then(|(owner, menu)| {
+    let active_popup = state.bar.active_popup().and_then(|(owner, content)| {
         layout_popup(
-            &menu,
+            &content,
             state.width as f64,
             &state.bar.text_style,
             &state.renderer,
         )
-        .map(|layout| (owner, menu, layout))
+        .map(|layout| (owner, content, layout))
     });
 
     match active_popup {
-        Some((owner, menu, layout)) => {
+        Some((owner, content, layout)) => {
             let popup_width = layout.pixel_width();
             let popup_height = layout.pixel_height();
             let left_margin = layout.x.round() as i32;
-            // The popup is on Layer::Overlay with exclusive_zone(0), so the
-            // compositor already places it past the bar's exclusive zone. We
-            // only add the small visual gap here — adding bar.height again
+            // The popup has exclusive_zone(0), so the compositor already
+            // places it past the bar's exclusive zone. We only add the small
+            // visual gap here — adding bar.height again
             // would double the offset.
             let edge_margin = POPUP_GAP.round() as i32;
 
@@ -347,7 +353,9 @@ fn sync_popup_surface(state: &mut WaylandState) {
                 let layer_surface = state.layer_shell.create_layer_surface(
                     &state.queue_handle,
                     surface,
-                    Layer::Overlay,
+                    // Top, like the bar: Overlay is for screen lockers and
+                    // screenshot tools, whose dimming must cover the popup.
+                    Layer::Top,
                     Some("beebar-popup"),
                     None,
                 );
@@ -357,7 +365,9 @@ fn sync_popup_surface(state: &mut WaylandState) {
                     layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
                 }
                 layer_surface.set_exclusive_zone(0);
-                layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
+                // Take keyboard focus while open so Escape can close it. The
+                // compositor hands focus back when the surface goes away.
+                layer_surface.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
 
                 let pool = SlotPool::new(
                     (popup_width.max(1) * popup_height.max(1) * 4) as usize,
@@ -370,7 +380,7 @@ fn sync_popup_surface(state: &mut WaylandState) {
                     pool,
                     renderer: CairoRenderer::new(popup_width, popup_height),
                     owner: owner.clone(),
-                    menu: menu.clone(),
+                    content: content.clone(),
                     layout: layout.clone(),
                     configured: false,
                     hovered_item: None,
@@ -379,7 +389,7 @@ fn sync_popup_surface(state: &mut WaylandState) {
 
             let popup = state.popup.as_mut().unwrap();
             popup.owner = owner;
-            popup.menu = menu;
+            popup.content = content;
             popup.layout = layout;
             popup.layer_surface.set_size(popup_width, popup_height);
             if state.bar.bottom {
@@ -401,6 +411,7 @@ fn sync_popup_surface(state: &mut WaylandState) {
         None => {
             state.popup = None;
             state.popup_catcher = None;
+            state.drag = None;
             if matches!(
                 state.pointer_focus,
                 PointerFocus::Popup | PointerFocus::Catcher
@@ -416,9 +427,10 @@ fn create_popup_catcher(state: &mut WaylandState) {
     let layer_surface = state.layer_shell.create_layer_surface(
         &state.queue_handle,
         surface,
-        // Top layer (one below Overlay where the popup lives), so the popup
-        // is guaranteed to be above the catcher regardless of compositor
-        // creation-order semantics.
+        // Same layer as the popup. The catcher is created first, so the popup
+        // stacks above it (compositors put the newer surface of a layer on
+        // top for input). The catcher is fully transparent, so its drawing
+        // order does not matter.
         Layer::Top,
         Some("beebar-popup-catcher"),
         None,
@@ -508,7 +520,7 @@ fn draw_popup_frame(
     popup.renderer.begin(width, height);
     draw_popup(
         &mut popup.renderer,
-        &popup.menu,
+        &popup.content,
         &popup.layout,
         text_style,
         popup.hovered_item,
@@ -693,7 +705,7 @@ impl ProvidesRegistryState for WaylandState {
     registry_handlers![OutputState];
 }
 
-// ─── wl_seat: discover pointer capability ────────────────────────────────────
+// ─── wl_seat: discover pointer and keyboard capabilities ─────────────────────
 
 impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
     fn event(
@@ -705,15 +717,52 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandState {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_seat::Event::Capabilities { capabilities } = event {
-            // Pointer capability bit = 1 (per Wayland protocol spec).
-            let has_pointer = match capabilities {
-                WEnum::Value(c) => (u32::from(c) & 1) != 0,
-                WEnum::Unknown(n) => (n & 1) != 0,
+            let bits = match capabilities {
+                WEnum::Value(c) => u32::from(c),
+                WEnum::Unknown(n) => n,
             };
-            if has_pointer && state.pointer.is_none() {
+            // Capability bits per the Wayland protocol: 1 = pointer,
+            // 2 = keyboard.
+            if bits & 1 != 0 && state.pointer.is_none() {
                 state.pointer = Some(seat.get_pointer(qh, ()));
                 log::debug!("[wayland] pointer acquired");
             }
+            if bits & 2 != 0 && state.keyboard.is_none() {
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
+                log::debug!("[wayland] keyboard acquired");
+            }
+        }
+    }
+}
+
+/// Linux evdev code of the Escape key (`KEY_ESC`). wl_keyboard reports raw
+/// evdev codes, so this holds for every keyboard layout.
+const KEY_ESC: u32 = 1;
+
+// ─── wl_keyboard: Escape closes the open popup ───────────────────────────────
+
+impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _keyboard: &wl_keyboard::WlKeyboard,
+        event: wl_keyboard::Event,
+        _: &(),
+        _: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // The keymap event carries a file descriptor; dropping the event
+        // closes it, and Escape needs no keymap.
+        if let wl_keyboard::Event::Key {
+            key,
+            state: WEnum::Value(wl_keyboard::KeyState::Pressed),
+            ..
+        } = event
+            && key == KEY_ESC
+            && state.popup.is_some()
+        {
+            state.bar.dismiss_all_popups();
+            state.bar.update_all();
+            state.needs_redraw = true;
         }
     }
 }
@@ -761,13 +810,30 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 ..
             } => {
                 state.pointer_pos = (surface_x, surface_y);
+                // Dragging a panel slider: keep feeding it the pointer's x,
+                // even outside the slider (the drag holds an implicit grab).
+                if state.pointer_focus == PointerFocus::Popup
+                    && let Some(index) = state.drag
+                {
+                    let dragged = state.popup.as_ref().and_then(|popup| {
+                        popup
+                            .layout
+                            .drag(index, surface_x)
+                            .map(|hit| (popup.owner.clone(), hit))
+                    });
+                    if let Some((owner, hit)) = dragged {
+                        state.bar.handle_popup_click(&owner, hit, MouseButton::Left);
+                        state.needs_redraw = true;
+                    }
+                    return;
+                }
                 // Update hover highlight when pointer moves over the popup.
                 if state.pointer_focus == PointerFocus::Popup {
                     let hover_changed = if let Some(popup) = state.popup.as_mut() {
-                        let new_hover =
-                            popup
-                                .layout
-                                .hit_test(&popup.menu.items, surface_x, surface_y);
+                        let new_hover = popup
+                            .layout
+                            .hit_test(&popup.content, surface_x, surface_y)
+                            .map(|hit| hit.index);
                         let changed = new_hover != popup.hovered_item;
                         popup.hovered_item = new_hover;
                         changed
@@ -801,6 +867,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 ..
             } => {
                 if !matches!(btn_state, WEnum::Value(wl_pointer::ButtonState::Pressed)) {
+                    // Releasing any button ends a slider drag.
+                    state.drag = None;
                     return;
                 }
                 if !state.configured {
@@ -833,9 +901,23 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandState {
                 } else {
                     MouseButton::ScrollUp
                 };
-                // Don't forward wheel events to popup items — they're not
-                // expected to react to scroll, and we don't want a wheel tick
-                // to dismiss/activate a menu entry.
+                // On a popup, only panel sliders react to the wheel. Menu
+                // entries must not be activated or dismissed by a wheel tick.
+                if state.pointer_focus == PointerFocus::Popup {
+                    let (px, py) = state.pointer_pos;
+                    let slider = state.popup.as_ref().and_then(|popup| {
+                        popup
+                            .layout
+                            .hit_test(&popup.content, px, py)
+                            .filter(|hit| hit.is_slider())
+                            .map(|hit| (popup.owner.clone(), hit))
+                    });
+                    if let Some((owner, hit)) = slider {
+                        state.bar.handle_popup_click(&owner, hit, mb);
+                        state.needs_redraw = true;
+                    }
+                    return;
+                }
                 if state.pointer_focus != PointerFocus::Bar {
                     return;
                 }
@@ -854,13 +936,16 @@ fn dispatch_pointer_event(state: &mut WaylandState, mb: MouseButton) {
     let (px, py) = state.pointer_pos;
 
     if state.pointer_focus == PointerFocus::Popup {
-        if let Some((owner, item_idx)) = state.popup.as_ref().and_then(|popup| {
+        if let Some((owner, hit)) = state.popup.as_ref().and_then(|popup| {
             popup
                 .layout
-                .hit_test(&popup.menu.items, px, py)
-                .map(|item_idx| (popup.owner.clone(), item_idx))
+                .hit_test(&popup.content, px, py)
+                .map(|hit| (popup.owner.clone(), hit))
         }) {
-            state.bar.handle_popup_click(&owner, item_idx, mb);
+            if mb == MouseButton::Left && hit.is_slider() {
+                state.drag = Some(hit.index);
+            }
+            state.bar.handle_popup_click(&owner, hit, mb);
         } else {
             state.bar.dismiss_all_popups();
         }

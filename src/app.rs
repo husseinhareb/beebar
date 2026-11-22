@@ -14,6 +14,7 @@ use crate::core::module::cpu::CpuModule;
 use crate::core::module::custom::CustomModule;
 use crate::core::module::memory::MemoryModule;
 use crate::core::module::network::NetworkModule;
+use crate::core::module::panel::PanelModule;
 use crate::core::module::playback::{PlaybackButtonIcons, PlaybackModule};
 use crate::core::module::screencast::ScreencastModule;
 use crate::core::module::temperature::TemperatureIcons;
@@ -81,6 +82,7 @@ fn build_module(
             mcfg.format.clone(),
             chrome,
         ))),
+        "panel" => Some(Box::new(PanelModule::new(chrome, mcfg))),
         "custom" => {
             let cmd = mcfg.command.clone().unwrap_or_else(|| "echo ???".into());
             Some(Box::new(CustomModule::new(cmd, chrome)))

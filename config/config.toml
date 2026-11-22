@@ -41,6 +41,7 @@ groups_right = [
     ["brightness", "volume", "microphone"],
     ["tray"],
     ["screencast"],
+    ["panel"],
 ]
 
 # ── Workspaces ────────────────────────────────────────────────────────────────
@@ -221,3 +222,142 @@ type = "screencast"
 # icon       = "\u25CF"      # the recording dot
 # background = "#d20f39"
 # foreground = "#fefefe"
+
+# Panel: a quick-settings dropdown. Click the icon to open it, click outside
+# (or the icon again) to close it. Everything in it is a shell command, so it
+# works with whatever tools you have:
+#   [[module.panel.buttons]]  icon, command, align ("left"/"right"),
+#                             confirm (true = needs a second click), or
+#                             label + [[...buttons.items]] (icon, label,
+#                             command, confirm) to open a menu page instead
+#   [[module.panel.sliders]]  icon, get (prints 0-100; the slider is hidden
+#                             while it fails), set ({value} = 0-100),
+#                             menu_command (arrow button at the end),
+#                             page (see below)
+#   [[module.panel.tiles]]    label, icon, command (run on click),
+#                             state (exit status 0 = lit), subtitle (first
+#                             line of output shown under the label),
+#                             level (prints 0-100) + icons (lowest to
+#                             highest) to pick the icon, icon_off (shown
+#                             while off), menu_command (arrow segment),
+#                             page (see below)
+# `page` makes the arrow open a page inside the panel instead of running
+# menu_command (which then becomes the page's "settings" entry):
+#   "audio-output"  every output device with its own slider (click a name to
+#                   make it the default) and every app playing, like a mixer
+#   "audio-input"   the same for microphones and apps recording
+#   "wifi"          nearby networks, click to connect or disconnect
+#   "bluetooth"     paired devices, click to connect or disconnect
+#   "notifications" recent notifications (click to show again), Do Not
+#                   Disturb and Clear All (dunst)
+# Sliders can be dragged or scrolled. Buttons and arrows that run a command
+# close the panel, tiles and pages keep it open.
+[module.panel]
+type = "panel"
+icon = "󰒓"                        # nf-md-cog
+foreground = "#cba6f7"
+padding_left  = 11.0               # square pill around the icon
+padding_right = 11.0
+panel_width        = 360
+panel_background   = "#1e1e2ef5"
+panel_border_color = "#45475a"
+surface_color      = "#313244"
+accent_color       = "#cba6f7"
+accent_text_color  = "#1e1e2e"
+critical_color     = "#f38ba8"     # a `confirm` button waiting for its second click
+media = true                       # what is playing, with controls (needs playerctl)
+
+[[module.panel.buttons]]
+icon = "󰹑"                        # screenshot of a region
+command = 'mkdir -p ~/Pictures/Screenshots && grim -g "$(slurp)" ~/Pictures/Screenshots/screenshot-$(date +%Y-%m-%d_%H-%M-%S).png'
+
+[[module.panel.buttons]]
+icon = "󰒓"                        # edit this config
+command = "xdg-open ~/.config/beebar/config.toml"
+
+[[module.panel.buttons]]
+icon = "󰌾"
+command = "loginctl lock-session"
+align = "right"
+
+[[module.panel.buttons]]
+icon = "󰐥"                        # opens a power menu page
+label = "Power"
+align = "right"
+
+[[module.panel.buttons.items]]
+icon = "󰤄"
+label = "Suspend"
+command = "systemctl suspend"
+
+[[module.panel.buttons.items]]
+icon = "󰍃"
+label = "Log Out"
+command = 'loginctl terminate-session "$XDG_SESSION_ID"'
+confirm = true
+
+[[module.panel.buttons.items]]
+icon = "󰜉"
+label = "Restart"
+command = "systemctl reboot"
+confirm = true
+
+[[module.panel.buttons.items]]
+icon = "󰐥"
+label = "Power Off"
+command = "systemctl poweroff"
+confirm = true
+
+[[module.panel.sliders]]
+icon = "󰕾"
+get = "wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print $2 * 100}'"
+set = "wpctl set-volume @DEFAULT_AUDIO_SINK@ {value}%"
+menu_command = "pavucontrol --tab=3"
+page = "audio-output"
+
+[[module.panel.sliders]]
+icon = "󰍬"
+get = "wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | awk '{print $2 * 100}'"
+set = "wpctl set-volume @DEFAULT_AUDIO_SOURCE@ {value}%"
+menu_command = "pavucontrol --tab=4"
+page = "audio-input"
+
+[[module.panel.sliders]]
+icon = "󰃠"                        # hidden on machines without a backlight
+get = "brightnessctl -c backlight -m | cut -d, -f4"
+set = "brightnessctl -c backlight set {value}%"
+
+[[module.panel.tiles]]
+label = "Wi-Fi"
+icon = "󰖩"
+state = '[ "$(nmcli radio wifi)" = enabled ]'
+command = '[ "$(nmcli radio wifi)" = enabled ] && nmcli radio wifi off || nmcli radio wifi on'
+subtitle = "nmcli -t -f NAME,TYPE connection show --active | grep wireless | cut -d: -f1"
+level = """nmcli -t -f IN-USE,SIGNAL device wifi list --rescan no | awk -F: '$1 == "*" { print $2; exit }'"""
+icons = ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"]   # signal strength, weakest to strongest
+icon_off = "󰤮"
+menu_command = "nm-connection-editor"
+page = "wifi"
+
+[[module.panel.tiles]]
+label = "Bluetooth"
+icon = "󰂯"
+icon_off = "󰂲"
+state = "bluetoothctl show | grep -q 'Powered: yes'"
+command = "bluetoothctl show | grep -q 'Powered: yes' && bluetoothctl power off || bluetoothctl power on"
+subtitle = "bluetoothctl devices Connected | head -1 | cut -d' ' -f3-"
+menu_command = "blueman-manager"
+page = "bluetooth"
+
+[[module.panel.tiles]]
+label = "Silent"                   # Do Not Disturb (fits next to the arrow)
+icon = "󰂛"
+state = '[ "$(dunstctl is-paused)" = true ]'
+command = "dunstctl set-paused toggle"
+page = "notifications"
+
+[[module.panel.tiles]]
+label = "Mute Mic"
+icon = "󰍭"
+state = "wpctl get-volume @DEFAULT_AUDIO_SOURCE@ | grep -q MUTED"
+command = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"

@@ -38,7 +38,7 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "m
 futures-util = "0.3"
 
 # Icon decoding (system tray icons)
-image = { version = "0.25", default-features = false, features = ["png", "ico"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg"] }
 
 # Misc
 chrono = "0.4"

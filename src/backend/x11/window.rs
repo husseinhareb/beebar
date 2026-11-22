@@ -11,7 +11,7 @@ use x11rb::wrapper::ConnectionExt as _;
 use crate::core::bar::{Bar, render_bar};
 use crate::core::layout::BarLayout;
 use crate::core::module::ModuleId;
-use crate::core::popup::{POPUP_GAP, PopupLayout, PopupMenu, draw_popup, layout_popup};
+use crate::core::popup::{POPUP_GAP, Popup, PopupLayout, draw_popup, layout_popup};
 use crate::renderer::cairo_renderer::CairoRenderer;
 use crate::renderer::primitives::Renderer;
 
@@ -59,11 +59,15 @@ struct PopupWindow {
     win: Window,
     gc: Gcontext,
     owner: ModuleId,
-    menu: PopupMenu,
+    content: Popup,
     layout: PopupLayout,
     renderer: CairoRenderer,
     hovered_item: Option<usize>,
 }
+
+/// X11 keycode of Escape: evdev `KEY_ESC` (1) plus the X server's offset of
+/// 8, which is what every evdev/libinput based server (and XWayland) uses.
+const X11_KEYCODE_ESCAPE: u8 = 9;
 
 pub fn run_x11(bar: &mut Bar) {
     let (conn, screen_num) = RustConnection::connect(None).expect("Failed to connect to X server");
@@ -203,6 +207,11 @@ pub fn run_x11(bar: &mut Bar) {
                 Event::Expose(_) => {
                     needs_redraw = true;
                 }
+                Event::KeyPress(ev) if ev.detail == X11_KEYCODE_ESCAPE && popup.is_some() => {
+                    bar.dismiss_all_popups();
+                    bar.update_all();
+                    needs_redraw = true;
+                }
                 Event::ButtonPress(ev) => {
                     use crate::core::event::{ClickEvent, MouseButton};
                     // X11 reports scroll wheel motion as button presses on
@@ -222,14 +231,21 @@ pub fn run_x11(bar: &mut Bar) {
                             // every click outside of it is reported here too
                             // (with negative or out-of-range coordinates).
                             // hit_test() rejects those, dismissing the menu.
-                            if let Some(item_idx) = active_popup.layout.hit_test(
-                                &active_popup.menu.items,
+                            let hit = active_popup.layout.hit_test(
+                                &active_popup.content,
                                 ev.event_x as f64,
                                 ev.event_y as f64,
-                            ) {
-                                bar.handle_popup_click(&active_popup.owner, item_idx, button);
-                            } else {
-                                bar.dismiss_all_popups();
+                            );
+                            let is_wheel =
+                                matches!(button, MouseButton::ScrollUp | MouseButton::ScrollDown);
+                            match hit {
+                                // Only panel sliders react to the wheel.
+                                Some(hit) if is_wheel && !hit.is_slider() => {}
+                                Some(hit) => {
+                                    bar.handle_popup_click(&active_popup.owner, hit, button);
+                                }
+                                None if is_wheel => {}
+                                None => bar.dismiss_all_popups(),
                             }
                             bar.update_all();
                             needs_redraw = true;
@@ -273,7 +289,10 @@ pub fn run_x11(bar: &mut Bar) {
         if let Some((mx, my, event_win)) = last_motion {
             if let Some(p) = popup.as_mut() {
                 if event_win == p.win {
-                    let new_hover = p.layout.hit_test(&p.menu.items, mx as f64, my as f64);
+                    let new_hover = p
+                        .layout
+                        .hit_test(&p.content, mx as f64, my as f64)
+                        .map(|hit| hit.index);
                     if new_hover != p.hovered_item {
                         p.hovered_item = new_hover;
                         render_popup_window(&conn, p, &bar.text_style, screen.root_depth);
@@ -349,9 +368,9 @@ fn sync_popup_window(
     let active_popup = bar.active_popup();
 
     match active_popup {
-        Some((owner, menu)) => {
+        Some((owner, content)) => {
             let Some(layout) =
-                layout_popup(&menu, bar.width as f64, &bar.text_style, text_renderer)
+                layout_popup(&content, bar.width as f64, &bar.text_style, text_renderer)
             else {
                 if let Some(popup) = popup_state.take() {
                     destroy_popup_window(conn, popup);
@@ -385,7 +404,8 @@ fn sync_popup_window(
                         .event_mask(
                             EventMask::EXPOSURE
                                 | EventMask::BUTTON_PRESS
-                                | EventMask::POINTER_MOTION,
+                                | EventMask::POINTER_MOTION
+                                | EventMask::KEY_PRESS,
                         )
                         .override_redirect(1)
                         .background_pixel(screen.black_pixel),
@@ -410,12 +430,21 @@ fn sync_popup_window(
                     x11rb::NONE,
                     x11rb::CURRENT_TIME,
                 );
+                // Grab the keyboard too, so Escape reaches the popup (an
+                // override-redirect window never gets focus on its own).
+                let _ = conn.grab_keyboard(
+                    false,
+                    win,
+                    x11rb::CURRENT_TIME,
+                    GrabMode::ASYNC,
+                    GrabMode::ASYNC,
+                );
 
                 *popup_state = Some(PopupWindow {
                     win,
                     gc,
                     owner: owner.clone(),
-                    menu: menu.clone(),
+                    content: content.clone(),
                     layout: layout.clone(),
                     renderer: CairoRenderer::new(popup_width, popup_height),
                     hovered_item: None,
@@ -424,7 +453,7 @@ fn sync_popup_window(
 
             let popup = popup_state.as_mut().unwrap();
             popup.owner = owner;
-            popup.menu = menu;
+            popup.content = content;
             popup.layout = layout;
             conn.configure_window(
                 popup.win,
@@ -449,6 +478,7 @@ fn sync_popup_window(
 
 fn destroy_popup_window(conn: &RustConnection, popup: PopupWindow) {
     let _ = conn.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
     let _ = conn.free_gc(popup.gc);
     let _ = conn.destroy_window(popup.win);
 }
@@ -464,7 +494,7 @@ fn render_popup_window(
     popup.renderer.begin(width, height);
     draw_popup(
         &mut popup.renderer,
-        &popup.menu,
+        &popup.content,
         &popup.layout,
         text_style,
         popup.hovered_item,

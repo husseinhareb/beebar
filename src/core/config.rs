@@ -322,6 +322,133 @@ pub struct ModuleConfig {
     /// Playback module: icon for the "next track" button.
     #[serde(default)]
     pub icon_next: Option<String>,
+
+    /// Panel module: round icon buttons in the top row.
+    #[serde(default)]
+    pub buttons: Option<Vec<PanelButtonConfig>>,
+
+    /// Panel module: show a media card (needs `playerctl`).
+    #[serde(default)]
+    pub media: Option<bool>,
+
+    /// Panel module: full-width sliders (volume, brightness, ...).
+    #[serde(default)]
+    pub sliders: Option<Vec<PanelSliderConfig>>,
+
+    /// Panel module: two-column grid of toggle tiles.
+    #[serde(default)]
+    pub tiles: Option<Vec<PanelTileConfig>>,
+
+    /// Panel module: width of the dropdown in pixels.
+    #[serde(default)]
+    pub panel_width: Option<f64>,
+
+    /// Panel module: dropdown fill.
+    #[serde(default)]
+    pub panel_background: Option<String>,
+
+    /// Panel module: 1px outline of the dropdown.
+    #[serde(default)]
+    pub panel_border_color: Option<String>,
+
+    /// Panel module: fill of buttons, inactive tiles and slider tracks.
+    #[serde(default)]
+    pub surface_color: Option<String>,
+
+    /// Panel module: fill of active tiles and sliders.
+    #[serde(default)]
+    pub accent_color: Option<String>,
+
+    /// Panel module: text and icons drawn on the accent color.
+    #[serde(default)]
+    pub accent_text_color: Option<String>,
+}
+
+/// A button in the panel's top row.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PanelButtonConfig {
+    pub icon: String,
+    /// Shell command run on click. The panel closes afterwards.
+    #[serde(default)]
+    pub command: String,
+    /// With `items`, the button opens a page listing them instead of running
+    /// `command` (e.g. a power menu). `label` is that page's title.
+    #[serde(default)]
+    pub items: Option<Vec<PanelMenuItemConfig>>,
+    #[serde(default)]
+    pub label: Option<String>,
+    /// "left" (default) or "right".
+    #[serde(default)]
+    pub align: Option<String>,
+    /// Require a second click within a few seconds (for power off, etc).
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// An entry of a button's page (see `PanelButtonConfig::items`).
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PanelMenuItemConfig {
+    pub icon: String,
+    pub label: String,
+    /// Shell command run on click. The panel closes afterwards.
+    pub command: String,
+    /// Require a second click within a few seconds.
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// A slider row in the panel.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PanelSliderConfig {
+    pub icon: String,
+    /// Shell command printing the current value as a percentage (0-100).
+    /// The slider is hidden while this command fails.
+    pub get: String,
+    /// Shell command that sets the value; `{value}` is replaced by 0-100.
+    pub set: String,
+    /// Optional command behind an arrow button at the end of the row. With
+    /// `page` set, it becomes the "settings" entry at the bottom of the page.
+    #[serde(default)]
+    pub menu_command: Option<String>,
+    /// Built-in page opened by the arrow button: "audio-output",
+    /// "audio-input", "wifi" or "bluetooth".
+    #[serde(default)]
+    pub page: Option<String>,
+}
+
+/// A toggle tile in the panel grid.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct PanelTileConfig {
+    pub label: String,
+    pub icon: String,
+    /// Shell command run when the tile is clicked (usually a toggle).
+    pub command: String,
+    /// Shell command whose exit status decides if the tile is lit
+    /// (0 = active). Without it the tile is a plain, never-lit action.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Shell command whose first output line is shown under the label.
+    #[serde(default)]
+    pub subtitle: Option<String>,
+    /// Shell command printing a level from 0 to 100 (e.g. Wi-Fi signal).
+    /// Picks the tile's icon from `icons`.
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Icons for `level`, from lowest to highest.
+    #[serde(default)]
+    pub icons: Option<Vec<String>>,
+    /// Icon shown while the tile is off (its `state` command fails).
+    #[serde(default)]
+    pub icon_off: Option<String>,
+    /// Optional command behind an arrow segment on the tile's right end.
+    /// The panel closes after running it. With `page` set, it becomes the
+    /// "settings" entry at the bottom of the page instead.
+    #[serde(default)]
+    pub menu_command: Option<String>,
+    /// Built-in page opened by the arrow segment: "audio-output",
+    /// "audio-input", "wifi", "bluetooth" or "notifications".
+    #[serde(default)]
+    pub page: Option<String>,
 }
 
 fn default_height() -> u32 {

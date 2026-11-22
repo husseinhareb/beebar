@@ -1,8 +1,12 @@
+use crate::core::panel::{PanelLayout, PanelTarget, PanelView, draw_panel, layout_panel};
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Point, Rect, Renderer, TextStyle};
 
 pub const POPUP_GAP: f64 = 6.0;
 const POPUP_EDGE_MARGIN: f64 = 4.0;
+/// Panels are larger and line up with the bar's pills rather than hugging
+/// the screen edge.
+const PANEL_EDGE_MARGIN: f64 = 10.0;
 const POPUP_BORDER: f64 = 1.0;
 const POPUP_HORIZONTAL_PADDING: f64 = 12.0;
 const POPUP_VERTICAL_PADDING: f64 = 8.0;
@@ -49,11 +53,60 @@ pub struct PopupMenu {
     pub items: Vec<PopupMenuItem>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelPopup {
+    /// Horizontal anchor in bar-local coordinates.
+    pub anchor_x: f64,
+    pub view: PanelView,
+}
+
+/// What a module shows below (or above) the bar.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Popup {
+    /// A vertical list of entries, like a tray context menu.
+    Menu(PopupMenu),
+    /// A quick-settings panel with buttons, sliders and tiles.
+    Panel(Box<PanelPopup>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTarget {
+    MenuItem,
+    Panel(PanelTarget),
+}
+
+/// A pointer event that landed on a popup element.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PopupHit {
+    /// Menu: the item index. Panel: the element index (also used for hover).
+    pub index: usize,
+    pub target: HitTarget,
+    /// For sliders, the pointer position along the track (0.0 to 1.0).
+    pub fraction: f64,
+}
+
+impl PopupHit {
+    pub fn is_slider(&self) -> bool {
+        matches!(self.target, HitTarget::Panel(target) if target.is_slider())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PopupLayout {
     pub x: f64,
     pub width: f64,
     pub height: f64,
+    body: LayoutBody,
+}
+
+#[derive(Debug, Clone)]
+enum LayoutBody {
+    Menu(MenuLayout),
+    Panel(PanelLayout),
+}
+
+#[derive(Debug, Clone)]
+struct MenuLayout {
     item_offsets: Vec<f64>,
     item_sizes: Vec<f64>,
     text_y_offset: f64,
@@ -69,10 +122,48 @@ impl PopupLayout {
         self.height.ceil().max(1.0) as u32
     }
 
-    pub fn hit_test(&self, items: &[PopupMenuItem], x: f64, y: f64) -> Option<usize> {
-        if items.is_empty() || x < 0.0 || y < 0.0 || x >= self.width || y >= self.height {
+    /// The element of `popup` under `(x, y)` in popup-local coordinates.
+    pub fn hit_test(&self, popup: &Popup, x: f64, y: f64) -> Option<PopupHit> {
+        if x < 0.0 || y < 0.0 || x >= self.width || y >= self.height {
             return None;
         }
+        match (&self.body, popup) {
+            (LayoutBody::Menu(layout), Popup::Menu(menu)) => {
+                layout.hit_test(&menu.items, y).map(|index| PopupHit {
+                    index,
+                    target: HitTarget::MenuItem,
+                    fraction: 0.0,
+                })
+            }
+            (LayoutBody::Panel(layout), Popup::Panel(_)) => {
+                layout
+                    .hit_test(x, y)
+                    .map(|(index, target, fraction)| PopupHit {
+                        index,
+                        target: HitTarget::Panel(target),
+                        fraction,
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    /// Re-evaluate the element at `index` for a pointer at popup-local `x`,
+    /// even outside the popup. Used to keep dragging a slider.
+    pub fn drag(&self, index: usize, x: f64) -> Option<PopupHit> {
+        let LayoutBody::Panel(layout) = &self.body else {
+            return None;
+        };
+        layout.drag(index, x).map(|(target, fraction)| PopupHit {
+            index,
+            target: HitTarget::Panel(target),
+            fraction,
+        })
+    }
+}
+
+impl MenuLayout {
+    fn hit_test(&self, items: &[PopupMenuItem], y: f64) -> Option<usize> {
         for (idx, item) in items.iter().enumerate() {
             if !item.is_selectable() {
                 continue;
@@ -96,6 +187,37 @@ impl PopupLayout {
 }
 
 pub fn layout_popup<R: Renderer>(
+    popup: &Popup,
+    bar_width: f64,
+    style: &TextStyle,
+    renderer: &R,
+) -> Option<PopupLayout> {
+    match popup {
+        Popup::Menu(menu) => layout_menu(menu, bar_width, style, renderer),
+        Popup::Panel(panel) => {
+            let layout = layout_panel(&panel.view);
+            Some(PopupLayout {
+                x: place(panel.anchor_x, layout.width, bar_width, PANEL_EDGE_MARGIN),
+                width: layout.width,
+                height: layout.height,
+                body: LayoutBody::Panel(layout),
+            })
+        }
+    }
+}
+
+/// Left edge of a popup `width` wide, centred on `anchor_x` and kept
+/// `margin` away from both ends of the bar.
+fn place(anchor_x: f64, width: f64, bar_width: f64, margin: f64) -> f64 {
+    let max_x = (bar_width - width - margin).max(margin);
+    if max_x <= margin {
+        ((bar_width - width) / 2.0).max(0.0)
+    } else {
+        (anchor_x - width / 2.0).clamp(margin, max_x)
+    }
+}
+
+fn layout_menu<R: Renderer>(
     popup: &PopupMenu,
     bar_width: f64,
     style: &TextStyle,
@@ -161,28 +283,42 @@ pub fn layout_popup<R: Renderer>(
     }
     let height = (cursor + POPUP_VERTICAL_PADDING + POPUP_BORDER).ceil();
 
-    let max_x = (bar_width - width - POPUP_EDGE_MARGIN).max(POPUP_EDGE_MARGIN);
-    let x = if max_x <= POPUP_EDGE_MARGIN {
-        ((bar_width - width) / 2.0).max(0.0)
-    } else {
-        (popup.anchor_x - width / 2.0).clamp(POPUP_EDGE_MARGIN, max_x)
-    };
-
     Some(PopupLayout {
-        x,
+        x: place(popup.anchor_x, width, bar_width, POPUP_EDGE_MARGIN),
         width,
         height,
-        item_offsets,
-        item_sizes,
-        text_y_offset: (action_height - text_height) / 2.0,
-        label_x: POPUP_BORDER + left_pad,
+        body: LayoutBody::Menu(MenuLayout {
+            item_offsets,
+            item_sizes,
+            text_y_offset: (action_height - text_height) / 2.0,
+            label_x: POPUP_BORDER + left_pad,
+        }),
     })
 }
 
 pub fn draw_popup<R: Renderer>(
     renderer: &mut R,
+    popup: &Popup,
+    layout: &PopupLayout,
+    style: &TextStyle,
+    hovered: Option<usize>,
+) {
+    match (popup, &layout.body) {
+        (Popup::Menu(menu), LayoutBody::Menu(menu_layout)) => {
+            draw_menu(renderer, menu, layout, menu_layout, style, hovered);
+        }
+        (Popup::Panel(panel), LayoutBody::Panel(panel_layout)) => {
+            draw_panel(renderer, &panel.view, panel_layout, style, hovered);
+        }
+        _ => {}
+    }
+}
+
+fn draw_menu<R: Renderer>(
+    renderer: &mut R,
     popup: &PopupMenu,
     layout: &PopupLayout,
+    menu_layout: &MenuLayout,
     style: &TextStyle,
     hovered: Option<usize>,
 ) {
@@ -234,8 +370,8 @@ pub fn draw_popup<R: Renderer>(
     );
 
     for (idx, item) in popup.items.iter().enumerate() {
-        let row_y = layout.row_y(idx);
-        let row_h = layout.row_height(idx);
+        let row_y = menu_layout.row_y(idx);
+        let row_h = menu_layout.row_height(idx);
 
         if hovered == Some(idx) && item.is_selectable() {
             renderer.draw_rect(
@@ -272,7 +408,7 @@ pub fn draw_popup<R: Renderer>(
                     renderer.draw_text(
                         Point {
                             x: POPUP_BORDER + POPUP_HORIZONTAL_PADDING,
-                            y: row_y + layout.text_y_offset,
+                            y: row_y + menu_layout.text_y_offset,
                         },
                         glyph,
                         &item_style,
@@ -281,8 +417,8 @@ pub fn draw_popup<R: Renderer>(
 
                 renderer.draw_text(
                     Point {
-                        x: layout.label_x,
-                        y: row_y + layout.text_y_offset,
+                        x: menu_layout.label_x,
+                        y: row_y + menu_layout.text_y_offset,
                     },
                     &item.label,
                     &item_style,
@@ -294,7 +430,7 @@ pub fn draw_popup<R: Renderer>(
                     renderer.draw_text(
                         Point {
                             x: layout.width - POPUP_BORDER - POPUP_HORIZONTAL_PADDING - glyph_w,
-                            y: row_y + layout.text_y_offset,
+                            y: row_y + menu_layout.text_y_offset,
                         },
                         glyph,
                         &item_style,

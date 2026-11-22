@@ -6,6 +6,7 @@ pub mod cpu;
 pub mod custom;
 pub mod memory;
 pub mod network;
+pub mod panel;
 pub mod playback;
 pub mod screencast;
 pub mod temperature;
@@ -16,7 +17,7 @@ pub mod workspaces;
 
 use crate::core::config::{ModuleConfig, resolve_length, resolve_optional_color};
 use crate::core::event::ClickEvent;
-use crate::core::popup::PopupMenu;
+use crate::core::popup::{Popup, PopupHit};
 use crate::renderer::color::Color;
 use crate::renderer::primitives::{Renderer, TextStyle};
 
@@ -24,7 +25,7 @@ use crate::renderer::primitives::{Renderer, TextStyle};
 pub type ModuleId = String;
 
 /// An icon to render: raw ARGB32 pixels, width and height in pixels.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IconData {
     /// ARGB32 pixel data, row-major, length = width * height * 4.
     pub pixels: Vec<u8>,
@@ -242,13 +243,14 @@ pub trait Module: Send {
     /// Handle a click event on this module's area. Default: no-op.
     fn click(&mut self, _event: ClickEvent) {}
 
-    /// Return an active popup menu anchored to the bar, if any.
-    fn popup(&self) -> Option<PopupMenu> {
+    /// Return an active popup (menu or panel) anchored to the bar, if any.
+    fn popup(&self) -> Option<Popup> {
         None
     }
 
-    /// Handle a click on one popup entry.
-    fn popup_click(&mut self, _item_index: usize, _button: crate::core::event::MouseButton) {}
+    /// Handle a click on one popup element. Wheel events arrive here too,
+    /// but only for panel sliders.
+    fn popup_click(&mut self, _hit: PopupHit, _button: crate::core::event::MouseButton) {}
 
     /// Dismiss the module popup, if any.
     fn dismiss_popup(&mut self) {}
